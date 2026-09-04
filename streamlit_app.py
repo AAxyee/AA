@@ -96,7 +96,7 @@ if option == "I want information from our database":
     if query:
         results = search_text(query, INFO_KNOWLEDGE_BASE)
         if results:
-            st.markdown("**Search Results (from knowledge base):**")
+            st.markdown("**Search Results (from INFO_KNOWLDGE_BASE):**")
             for r in results:
                 st.write(f"[1] \"{r}\"")
         else:
