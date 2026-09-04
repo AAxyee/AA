@@ -1,56 +1,107 @@
 import streamlit as st
-from openai import OpenAI
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+# --- Preloaded Institutional Documents ---
+FORM_FIELDS = [
+    "Name of study",
+    "Requestor's email address",
+    "Objectives and intended use of findings",
+    "Does your study involve any vulnerable group?",
+    "Describe sample group",
+    "Describe how you will recruit participants",
+    "Does your study involve any of the following? (systematic investigation, testing interventions, collecting data, evaluation study)",
+    "Briefly describe the research design, including analysis plan",
+    "Stage of the study",
+    "Frequency of the study",
+    "Was a previous study on this topic conducted? When?"
+]
+
+OVERVIEW_STUDIES = """
+FY2023 Studies included: Volunteer Management Survey, Digital Acceleration Index, PDPA compliance, Employer Support Grant review, Peer Support Strategy evaluation, 4ST Perception Poll, Board Evaluation Survey, Organisational Health Framework, Volunteer Impact Assessment Framework, Volunteer Management Maturity Matrix, Project SAFE evaluation, Fundraising capability study.
+FY2024 Studies included: Stakeholder Study, Digital Acceleration Index (continued), Organisational Health Framework cycle 2, Training Needs Survey, Empowering for Life Impact Study, Board Evaluation Survey cycle 2, Volunteer Management Maturity Matrix refinement, Tech Stack in Homes study, Board Leadership Study, Empowerment Service Design Module, Collective Impact Projects evaluation, MyAIMS User Discovery, Sector Perception Study, Work Conditions Study.
+FY2025 Studies included: Social Sector Development Survey, Membership Renewal Survey, Organisational Health Framework cycle 3, Volunteer Management Maturity Matrix cycle 3, MyAIMS User Discovery, Stakeholder Pulse Survey, Board Leadership Study cycle 2.
+FY2026 Studies included: Social Sector Development Survey, Digital Maturity Index (proposed), Organisational Health Framework cycle 4, Volunteer Management Maturity Matrix cycle 4, Stakeholder Perception Pulse Survey, SGSHARE Performance evaluation, Brand Health Study, Social Service Tribe CNA Docuseries evaluation, President’s Challenge study, Donor User Service Journey, Social Media Addiction study (proposed).
+"""
+
+STUDY_DESIGN_CHECKLIST = """
+**Study Design Checklist**
+1. Clear purpose/justification: Is the study necessary, critical, and actionable?
+2. Questions/data points: Are they purposeful, scoped, and directly mapped to objectives?
+3. Target population: Is it suitable, clearly defined, and ethically accessible?
+4. Sample size: Is it adequate and justified (power calculation for quantitative, sufficiency for qualitative)?
+5. Data collection method: Is it suitable, justified, and ethical? Is respondent burden reasonable?
+"""
+
+ANALYSIS_REVIEW_CHECKLIST = """
+**Analysis Review Checklist**
+1. Analytical approach: Appropriate, consistent with design, clearly stated and justified.
+2. Mapping: Does the analysis plan address each study question?
+3. Indicators/variables: Clearly defined, measurable, operationalized (quantitative) or grounded (qualitative).
+4. Limitations/assumptions: Acknowledged, bias accounted for, assumptions clearly stated.
+"""
+
+# --- App Title ---
+st.title("📚 Institutional Knowledge Assistant")
+
+# --- Introduction ---
+st.markdown("""
+I am a **research support assistant** that helps staff access institutional knowledge and provide study design guidance.  
+
+For study proposals, I will guide you through a few questions and generate a summary for submission to your director for study approval.  
+For advice on your study design and analysis, I will run you through a checklist.  
+""")
+
+# --- User Options ---
+option = st.radio(
+    "Please select one of the following:",
+    [
+        "I want information from our database",
+        "I want to conduct a study",
+        "I want advice on my study design",
+        "I want advice on my analysis"
+    ]
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# --- Step 1: Knowledge Database Search ---
+if option == "I want information from our database":
+    st.header("Step 1: Knowledge Database Search")
+    query = st.text_input("Enter your question:")
+    if query:
+        st.markdown("**Search Results (from overview of studies):**")
+        st.text(OVERVIEW_STUDIES[:1000])  # preview first 1000 chars
+        st.info("If you cannot find the information you want, please state: *'I cannot find the information I want.'*")
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+# --- Step 2: Conduct a Study (Information Request Form) ---
+elif option == "I want to conduct a study":
+    st.header("Step 2: Information Request Form")
+    responses = {}
+    for field in NCSS_FORM_FIELDS:
+        responses[field] = st.text_input(field)
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    if st.button("Generate Summary"):
+        st.subheader("📄 Information Request Form")
+        for field, response in responses.items():
+            st.write(f"{field}: {response}")
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+        st.subheader("📌 Summary for Submission")
+        summary_text = "\n".join([f"{field}: {resp}" for field, resp in responses.items()])
+        st.success("Copy and paste this summary to send to the Director for study approval.")
+        st.text(summary_text)
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+# --- Step 3: Study Design Guidance ---
+elif option == "I want advice on my study design":
+    st.header("Step 3: Study Design Guidance")
+    st.markdown("**Similar Studies Analysis**")
+    st.text(OVERVIEW_STUDIES[:1000])  # preview
+    st.markdown(STUDY_DESIGN_CHECKLIST)
+    st.info("Next Steps: Please review each item and let me know if you need clarification.")
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# --- Step 4: Analysis Review Guidance ---
+elif option == "I want advice on my analysis":
+    st.header("Step 4: Analysis Review Process")
+    st.markdown(ANALYSIS_REVIEW_CHECKLIST)
+    st.info("Next Steps: Please review each item and let me know if you need clarification.")
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
-
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+# --- Restart Option ---
+st.markdown("---")
+if st.button("🔄 Restart"):
+    st.experimental_rerun()
