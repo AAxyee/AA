@@ -10,7 +10,7 @@ import os
 
 st.set_page_config(
 
-    page_title="Research Support Assistant",
+    page_title="Wanna Know",
 
     page_icon="🔬",
 
