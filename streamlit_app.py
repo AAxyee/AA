@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import streamlit as st
 
 from openai import OpenAI
@@ -927,3 +928,1769 @@ if st.session_state.option_selected:
         })
 
         st.rerun()
+=======
+"""
+Institutional Research Support Assistant
+
+Streamlit application for:
+
+1. Institutional knowledge search
+2. Study proposal / information sourcing
+3. Study design guidance
+4. Analysis review
+
+Knowledge base:
+- Info for knowledge base
+- overview of studies for WK
+- NCSS Studies form
+- Checklist for study design for WK
+- Analysis review checklist for WK
+
+IMPORTANT:
+
+The OpenAI API key is NOT entered by users.
+
+It must be configured as a Streamlit secret:
+
+OPENAI_API_KEY = "your-api-key-here"
+
+Knowledge documents are stored in the application's:
+
+Knowledge Base/
+
+folder and are loaded automatically.
+
+Users may also upload PDF, DOCX, or TXT documents.
+Uploaded documents are treated as user-provided material
+and are NOT added to the permanent Knowledge Base.
+"""
+
+from __future__ import annotations
+
+from io import BytesIO
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import re
+
+import streamlit as st
+from docx import Document
+from openai import OpenAI
+from pypdf import PdfReader
+
+
+# ============================================================
+# PAGE CONFIGURATION
+# ============================================================
+
+st.set_page_config(
+    page_title="Research Support Assistant",
+    page_icon="📚",
+    layout="wide",
+)
+
+
+# ============================================================
+# OPENAI CONFIGURATION
+# ============================================================
+
+# The API key is stored server-side in Streamlit Secrets.
+# Users never see or enter the key.
+
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY")
+
+if not OPENAI_API_KEY:
+    st.error(
+        "The application has not been configured with an OpenAI API key. "
+        "Please contact the application administrator."
+    )
+    st.stop()
+
+
+# ============================================================
+# KNOWLEDGE BASE CONFIGURATION
+# ============================================================
+
+# Knowledge documents are stored in this folder.
+
+KNOWLEDGE_BASE_DIR = Path("Knowledge Base")
+
+
+DOCUMENT_NAMES = {
+    "Info for knowledge base": "General institutional knowledge",
+    "overview of studies for WK": "Previous WK studies",
+    "NCSS Studies form": "Study request form",
+    "Checklist for study design for WK": "Study design checklist",
+    "Analysis review checklist for WK": "Analysis review checklist",
+}
+
+
+MODE_LABELS = {
+    "knowledge": "Knowledge Database Search",
+    "study": "Information Sourcing & Study Request",
+    "design": "Study Design Guidance",
+    "analysis": "Analysis Review",
+}
+
+
+MODE_DOCUMENTS = {
+    "knowledge": [
+        "Info for knowledge base",
+        "overview of studies for WK",
+    ],
+    "study": [
+        "NCSS Studies form",
+        "Info for knowledge base",
+    ],
+    "design": [
+        "NCSS Studies form",
+        "overview of studies for WK",
+        "Checklist for study design for WK",
+    ],
+    "analysis": [
+        "Analysis review checklist for WK",
+        "overview of studies for WK",
+    ],
+}
+
+
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+
+SYSTEM_PROMPT = """
+You are an internal institutional research support assistant.
+
+Your job is to help research staff using ONLY:
+
+1. The supplied institutional knowledge-base excerpts;
+2. Documents uploaded by the user during the conversation;
+3. Information explicitly provided by the user.
+
+CORE RULES
+----------
+
+1. Do not invent institutional policies, procedures, study details,
+   form fields, previous studies, recommendations, requirements,
+   deadlines, approval processes, or statistical guidance.
+
+2. Treat the supplied institutional knowledge-base excerpts as the
+   authoritative institutional knowledge source.
+
+3. If the institutional knowledge-base excerpts do not contain the
+   answer, say:
+
+   "I don't see that information in our current knowledge base."
+
+   Then explain what information is missing and, where appropriate,
+   direct the user to the relevant information-request, study-design,
+   or analysis-review process.
+
+4. Never present an inference as an institutional fact.
+
+5. Distinguish clearly between:
+
+   - information explicitly stated in the institutional documents;
+   - information supplied by the user;
+   - information contained in a user-uploaded document;
+   - general methodological suggestions.
+
+6. When making a factual claim based on the institutional knowledge
+   base, cite the supporting source using the supplied citation number.
+
+   Example:
+
+   [1] "Exact text from the supplied document."
+
+7. Quotations from institutional source excerpts must be copied exactly.
+   Do not fabricate quotations.
+
+8. If the source material is insufficient to answer a question,
+   ask a focused follow-up question rather than guessing.
+
+9. Maintain a professional, collegial tone appropriate for internal
+   institutional research staff.
+
+10. Always identify the current workflow step.
+
+11. Always provide a clear next step.
+
+12. For multi-step workflows, briefly summarize what has already been
+    established before moving to the next major step.
+
+13. Do not claim that a study, policy, procedure, or recommendation
+    exists unless it appears in the supplied institutional documents.
+
+14. User-uploaded documents are NOT part of the institutional
+    knowledge base.
+
+15. Information taken from a user-uploaded document must be identified
+    as coming from that uploaded document.
+
+16. Do not cite user-uploaded documents using institutional
+    [SOURCE n] citations.
+
+17. Identify user-uploaded documents by filename when referring to
+    information contained in them.
+
+18. If a user-uploaded document conflicts with the institutional
+    knowledge base, clearly identify the conflict. Do not silently
+    resolve the conflict.
+
+19. Do not assume that information in a user-uploaded document is
+    institutional policy or an institutional requirement.
+
+20. General methodological suggestions must be clearly identified as
+    general suggestions rather than institutional requirements.
+
+WORKFLOW RULES
+--------------
+
+KNOWLEDGE MODE
+--------------
+
+Answer questions using the institutional knowledge base.
+
+Prioritize relevant institutional knowledge and previous WK studies.
+
+If a user-uploaded document is relevant, you may use it as additional
+user-provided context, but distinguish it from institutional knowledge.
+
+STUDY MODE
+----------
+
+Help the user develop a study request using the NCSS Studies form.
+
+Collect information systematically, including information that is
+explicitly represented in the supplied form or documents.
+
+Do not invent additional mandatory form fields.
+
+Keep track of information already supplied by the user.
+
+If the user uploads a study proposal or related document, use it as
+user-provided information and distinguish it from the institutional
+form or knowledge base.
+
+DESIGN MODE
+-----------
+
+Help the user think through study design using:
+
+- the study request information;
+- previous WK studies;
+- the study design checklist;
+- relevant user-uploaded documents.
+
+Do not declare a design "approved" or "appropriate" unless the
+institutional documents explicitly provide such a criterion.
+
+ANALYSIS MODE
+-------------
+
+Review the user's proposed analysis against the supplied
+analysis-review checklist.
+
+Separate:
+
+- checklist requirements;
+- information supplied by the user;
+- information contained in uploaded documents;
+- methodological observations.
+
+Do not fabricate statistical requirements that are not supported by
+the supplied checklist.
+
+RESPONSE STRUCTURE
+------------------
+
+Where useful, use:
+
+## Current step
+
+## What I found
+
+## What we have established
+
+## Next step
+
+Use tables and checklists when they improve clarity.
+"""
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+def initialise_session() -> None:
+    """Initialise application state."""
+
+    defaults = {
+        "messages": [],
+        "mode": None,
+        "workflow_step": 0,
+        "form_data": {},
+        "documents": {},
+        "document_stats": {},
+        "uploaded_documents": {},
+        "uploaded_document_stats": {},
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+initialise_session()
+
+
+# ============================================================
+# TEXT EXTRACTION FROM KNOWLEDGE BASE FILES
+# ============================================================
+
+def extract_text_from_path(file_path: Path) -> str:
+    """
+    Extract text from PDF, DOCX or TXT files.
+    """
+
+    suffix = file_path.suffix.lower()
+
+    try:
+
+        if suffix == ".pdf":
+
+            reader = PdfReader(str(file_path))
+
+            pages = []
+
+            for page in reader.pages:
+                pages.append(page.extract_text() or "")
+
+            return "\n\n".join(pages)
+
+        if suffix == ".docx":
+
+            document = Document(str(file_path))
+
+            paragraphs = [
+                paragraph.text.strip()
+                for paragraph in document.paragraphs
+                if paragraph.text.strip()
+            ]
+
+            return "\n\n".join(paragraphs)
+
+        if suffix == ".txt":
+
+            return file_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+
+    except Exception as exc:
+
+        st.warning(
+            f"Could not read '{file_path.name}': {exc}"
+        )
+
+    return ""
+
+
+# ============================================================
+# TEXT EXTRACTION FROM USER-UPLOADED FILES
+# ============================================================
+
+def extract_text_from_uploaded_file(uploaded_file) -> str:
+    """
+    Extract text from a Streamlit-uploaded PDF, DOCX or TXT file.
+
+    The uploaded file remains in the current Streamlit session and
+    is not written into the permanent Knowledge Base folder.
+    """
+
+    suffix = Path(uploaded_file.name).suffix.lower()
+
+    try:
+
+        file_bytes = uploaded_file.getvalue()
+
+        # ----------------------------------------------------
+        # PDF
+        # ----------------------------------------------------
+
+        if suffix == ".pdf":
+
+            reader = PdfReader(
+                BytesIO(file_bytes)
+            )
+
+            pages = []
+
+            for page in reader.pages:
+                pages.append(
+                    page.extract_text() or ""
+                )
+
+            return "\n\n".join(pages)
+
+        # ----------------------------------------------------
+        # DOCX
+        # ----------------------------------------------------
+
+        if suffix == ".docx":
+
+            document = Document(
+                BytesIO(file_bytes)
+            )
+
+            paragraphs = [
+                paragraph.text.strip()
+                for paragraph in document.paragraphs
+                if paragraph.text.strip()
+            ]
+
+            return "\n\n".join(paragraphs)
+
+        # ----------------------------------------------------
+        # TXT
+        # ----------------------------------------------------
+
+        if suffix == ".txt":
+
+            return file_bytes.decode(
+                "utf-8",
+                errors="replace",
+            )
+
+    except Exception as exc:
+
+        st.error(
+            f"Could not read '{uploaded_file.name}': {exc}"
+        )
+
+    return ""
+
+
+# ============================================================
+# TEXT CLEANING AND CHUNKING
+# ============================================================
+
+def normalise_text(text: str) -> str:
+    """
+    Normalise whitespace while preserving paragraph structure.
+    """
+
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
+
+    # Collapse spaces and tabs.
+    text = re.sub(r"[ \t]+", " ", text)
+
+    # Preserve paragraph breaks.
+    text = re.sub(
+        r"\n\s*\n+",
+        "\n\n",
+        text,
+    )
+
+    return text.strip()
+
+
+def split_into_chunks(
+    text: str,
+    max_words: int = 180,
+) -> List[str]:
+    """
+    Split documents into reasonably sized semantic chunks.
+
+    First split on blank lines, then combine short paragraphs
+    until approximately max_words is reached.
+    """
+
+    text = normalise_text(text)
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(
+            r"\n\s*\n+",
+            text,
+        )
+        if paragraph.strip()
+    ]
+
+    chunks = []
+
+    current = []
+    current_words = 0
+
+    for paragraph in paragraphs:
+
+        words = paragraph.split()
+        word_count = len(words)
+
+        if (
+            current
+            and current_words + word_count > max_words
+        ):
+
+            chunks.append(
+                "\n\n".join(current)
+            )
+
+            current = []
+            current_words = 0
+
+        current.append(paragraph)
+        current_words += word_count
+
+    if current:
+        chunks.append(
+            "\n\n".join(current)
+        )
+
+    return chunks
+
+
+# ============================================================
+# LOAD KNOWLEDGE BASE
+# ============================================================
+
+def identify_document_key(
+    filename: str,
+) -> str | None:
+    """
+    Match a filename to one of the recognised institutional
+    document names.
+
+    Matching is case-insensitive.
+    """
+
+    filename_lower = filename.lower()
+
+    for key in DOCUMENT_NAMES:
+
+        if key.lower() in filename_lower:
+            return key
+
+    return None
+
+
+def load_knowledge_base() -> Tuple[
+    Dict[str, str],
+    Dict[str, dict],
+]:
+    """
+    Load all PDF, DOCX and TXT documents from the Knowledge Base folder.
+
+    Recognised documents are stored using their logical document name.
+
+    Unrecognised documents are also retained using their filename.
+    """
+
+    documents: Dict[str, str] = {}
+    document_stats: Dict[str, dict] = {}
+
+    if not KNOWLEDGE_BASE_DIR.exists():
+        return documents, document_stats
+
+    if not KNOWLEDGE_BASE_DIR.is_dir():
+        return documents, document_stats
+
+    supported_extensions = {
+        ".pdf",
+        ".docx",
+        ".txt",
+    }
+
+    # rglob allows subfolders inside Knowledge Base as well.
+    files = sorted(
+        file_path
+        for file_path in KNOWLEDGE_BASE_DIR.rglob("*")
+        if (
+            file_path.is_file()
+            and file_path.suffix.lower()
+            in supported_extensions
+        )
+    )
+
+    for file_path in files:
+
+        text = extract_text_from_path(
+            file_path
+        )
+
+        if not text.strip():
+            continue
+
+        text = normalise_text(text)
+
+        matched_key = identify_document_key(
+            file_path.name
+        )
+
+        if matched_key:
+            document_key = matched_key
+        else:
+            # Preserve other knowledge-base documents.
+            document_key = file_path.name
+
+        documents[document_key] = text
+
+        document_stats[document_key] = {
+            "words": len(text.split()),
+            "chunks": len(
+                split_into_chunks(text)
+            ),
+            "filename": file_path.name,
+            "path": str(file_path),
+        }
+
+    return documents, document_stats
+
+
+# Load documents from the server-side Knowledge Base folder.
+
+documents, document_stats = load_knowledge_base()
+
+st.session_state.documents = documents
+st.session_state.document_stats = document_stats
+
+
+# ============================================================
+# RETRIEVAL
+# ============================================================
+
+STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "what",
+    "when",
+    "where",
+    "which",
+    "would",
+    "could",
+    "should",
+    "about",
+    "have",
+    "has",
+    "are",
+    "was",
+    "were",
+    "how",
+    "why",
+    "can",
+    "does",
+    "into",
+    "our",
+    "their",
+    "your",
+    "you",
+    "use",
+    "using",
+}
+
+
+def tokenise(text: str) -> List[str]:
+    """
+    Return useful searchable terms.
+    """
+
+    words = re.findall(
+        r"[a-zA-Z0-9][a-zA-Z0-9_-]{2,}",
+        text.lower(),
+    )
+
+    return [
+        word
+        for word in words
+        if word not in STOPWORDS
+    ]
+
+
+def score_chunk(
+    query: str,
+    chunk: str,
+) -> float:
+    """
+    Simple lexical retrieval score.
+
+    This is deliberately transparent and does not pretend
+    to be semantic retrieval.
+    """
+
+    query_words = set(
+        tokenise(query)
+    )
+
+    chunk_words = set(
+        tokenise(chunk)
+    )
+
+    if not query_words:
+        return 0.0
+
+    overlap = query_words.intersection(
+        chunk_words
+    )
+
+    score = len(overlap)
+
+    # Slightly reward exact phrase matches.
+    query_normalised = " ".join(
+        tokenise(query)
+    )
+
+    chunk_normalised = " ".join(
+        tokenise(chunk)
+    )
+
+    if (
+        query_normalised
+        and query_normalised
+        in chunk_normalised
+    ):
+        score += 5
+
+    return float(score)
+
+
+def relevant_excerpts(
+    documents: Dict[str, str],
+    query: str,
+    preferred: List[str] | None = None,
+    limit: int = 8,
+) -> List[Tuple[float, str, str]]:
+    """
+    Retrieve relevant chunks from the institutional knowledge base.
+    """
+
+    ranked = []
+
+    allowed_documents = (
+        preferred
+        if preferred
+        else list(documents.keys())
+    )
+
+    for name in allowed_documents:
+
+        if name not in documents:
+            continue
+
+        chunks = split_into_chunks(
+            documents[name]
+        )
+
+        for chunk in chunks:
+
+            score = score_chunk(
+                query,
+                chunk,
+            )
+
+            if score > 0:
+
+                ranked.append(
+                    (
+                        score,
+                        name,
+                        chunk,
+                    )
+                )
+
+    ranked.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    # Avoid returning many nearly identical chunks.
+    results = []
+    seen = set()
+
+    for item in ranked:
+
+        _, name, chunk = item
+
+        fingerprint = (
+            name,
+            re.sub(
+                r"\s+",
+                " ",
+                chunk.lower(),
+            )[:250],
+        )
+
+        if fingerprint in seen:
+            continue
+
+        seen.add(fingerprint)
+
+        results.append(item)
+
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+# ============================================================
+# DOCUMENT CONTEXT
+# ============================================================
+
+def build_document_context(
+    documents: Dict[str, str],
+    query: str,
+    preferred: List[str] | None = None,
+    limit: int = 8,
+) -> str:
+    """
+    Build numbered source excerpts for the model.
+    """
+
+    excerpts = relevant_excerpts(
+        documents=documents,
+        query=query,
+        preferred=preferred,
+        limit=limit,
+    )
+
+    if not excerpts:
+
+        return (
+            "No relevant excerpts were found in the "
+            "institutional knowledge base."
+        )
+
+    blocks = []
+
+    for index, (_, name, quote) in enumerate(
+        excerpts,
+        start=1,
+    ):
+
+        display_name = DOCUMENT_NAMES.get(
+            name,
+            name,
+        )
+
+        blocks.append(
+            f"[SOURCE {index}]\n"
+            f"Document: {display_name}\n"
+            f"Document key: {name}\n"
+            f"Excerpt:\n{quote}"
+        )
+
+    return "\n\n".join(blocks)
+
+
+# ============================================================
+# USER-UPLOADED DOCUMENT CONTEXT
+# ============================================================
+
+def build_uploaded_document_context() -> str:
+    """
+    Build context from documents uploaded by the user.
+
+    Uploaded documents are treated as user-provided material,
+    not as institutional knowledge-base documents.
+    """
+
+    uploaded_documents = st.session_state.get(
+        "uploaded_documents",
+        {},
+    )
+
+    if not uploaded_documents:
+
+        return (
+            "No user-uploaded documents were provided."
+        )
+
+    blocks = []
+
+    for index, (filename, text) in enumerate(
+        uploaded_documents.items(),
+        start=1,
+    ):
+
+        chunks = split_into_chunks(
+            text,
+            max_words=180,
+        )
+
+        # Limit the amount of uploaded content sent to the model.
+        # This prevents very large documents from overwhelming
+        # the prompt.
+        limited_chunks = chunks[:20]
+
+        blocks.append(
+            f"[USER DOCUMENT {index}]\n"
+            f"Filename: {filename}\n"
+            f"Content:\n"
+            + "\n\n".join(
+                limited_chunks
+            )
+        )
+
+    return "\n\n".join(blocks)
+
+
+# ============================================================
+# STUDY WORKFLOW STATE
+# ============================================================
+
+STUDY_FIELDS = [
+    ("purpose", "Study purpose"),
+    ("population", "Population"),
+    ("setting", "Setting"),
+    ("research_question", "Main research question"),
+    ("outcomes", "Main outcomes"),
+    ("design", "Proposed study design"),
+    ("data_source", "Data source"),
+    ("analysis", "Planned analysis"),
+]
+
+
+def update_form_data_from_prompt(
+    prompt: str,
+) -> None:
+    """
+    Store information supplied by the user.
+
+    This intentionally does not try to infer answers using an LLM.
+    """
+
+    st.session_state.form_data[
+        "latest_user_input"
+    ] = prompt
+
+
+def workflow_summary() -> str:
+    """
+    Return a compact summary of collected study information.
+    """
+
+    if not st.session_state.form_data:
+
+        return (
+            "No study information has been recorded yet."
+        )
+
+    lines = []
+
+    for key, label in STUDY_FIELDS:
+
+        value = st.session_state.form_data.get(
+            key
+        )
+
+        if value:
+
+            lines.append(
+                f"- **{label}:** {value}"
+            )
+
+    latest = st.session_state.form_data.get(
+        "latest_user_input"
+    )
+
+    if latest and not lines:
+
+        lines.append(
+            f"- **Latest information provided:** {latest}"
+        )
+
+    return (
+        "\n".join(lines)
+        or "No study information has been recorded yet."
+    )
+
+
+# ============================================================
+# OPENAI
+# ============================================================
+
+@st.cache_resource
+def get_client() -> OpenAI:
+    """
+    Create a cached OpenAI client using the server-side secret.
+
+    The API key is never shown to users.
+    """
+
+    return OpenAI(
+        api_key=OPENAI_API_KEY
+    )
+
+
+def generate_response(
+    client: OpenAI,
+    model: str,
+    mode: str,
+    user_prompt: str,
+    documents: Dict[str, str],
+) -> str:
+    """
+    Generate a grounded response using the current workflow.
+    """
+
+    preferred = MODE_DOCUMENTS.get(
+        mode,
+        list(documents.keys()),
+    )
+
+    # --------------------------------------------------------
+    # Institutional knowledge-base context
+    # --------------------------------------------------------
+
+    context = build_document_context(
+        documents=documents,
+        query=user_prompt,
+        preferred=preferred,
+        limit=8,
+    )
+
+    # --------------------------------------------------------
+    # User-uploaded document context
+    # --------------------------------------------------------
+
+    uploaded_context = (
+        build_uploaded_document_context()
+    )
+
+    # --------------------------------------------------------
+    # Existing study workflow information
+    # --------------------------------------------------------
+
+    study_context = workflow_summary()
+
+    # --------------------------------------------------------
+    # Complete prompt
+    # --------------------------------------------------------
+
+    workflow_instruction = f"""
+CURRENT WORKFLOW
+----------------
+
+Mode: {MODE_LABELS.get(mode, mode)}
+
+Current workflow step:
+
+{st.session_state.workflow_step}
+
+
+INFORMATION ALREADY PROVIDED BY THE USER
+----------------------------------------
+
+{study_context}
+
+
+SUPPLIED INSTITUTIONAL KNOWLEDGE-BASE EXCERPTS
+-----------------------------------------------
+
+{context}
+
+
+USER-UPLOADED DOCUMENTS
+-----------------------
+
+The following documents were uploaded by the user
+during this conversation.
+
+These are NOT part of the institutional knowledge base.
+
+Treat them as user-provided information.
+
+{uploaded_context}
+
+
+USER'S CURRENT MESSAGE
+----------------------
+
+{user_prompt}
+"""
+
+    response = client.responses.create(
+        model=model,
+        instructions=SYSTEM_PROMPT,
+        input=workflow_instruction,
+    )
+
+    return response.output_text
+
+
+# ============================================================
+# UI HELPERS
+# ============================================================
+
+def reset_chat() -> None:
+    """
+    Reset workflow, conversation and uploaded documents.
+    """
+
+    st.session_state.messages = []
+
+    st.session_state.mode = None
+
+    st.session_state.workflow_step = 0
+
+    st.session_state.form_data = {}
+
+    st.session_state.uploaded_documents = {}
+
+    st.session_state.uploaded_document_stats = {}
+
+
+def add_assistant_message(
+    content: str,
+) -> None:
+    """
+    Add an assistant message.
+    """
+
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": content,
+        }
+    )
+
+
+def show_workflow_status() -> None:
+    """
+    Display current workflow status.
+    """
+
+    mode = st.session_state.mode
+
+    if not mode:
+
+        st.info(
+            "Choose one of the four workflows below to begin."
+        )
+
+        return
+
+    st.markdown(
+        f"""
+### Current workflow
+
+**{MODE_LABELS.get(mode, mode)}**
+
+Workflow step: **{st.session_state.workflow_step}**
+"""
+    )
+
+
+def show_document_status() -> None:
+    """
+    Display institutional knowledge-base status.
+    """
+
+    if not KNOWLEDGE_BASE_DIR.exists():
+
+        st.error(
+            f"The knowledge-base folder was not found: "
+            f"`{KNOWLEDGE_BASE_DIR}`"
+        )
+
+        return
+
+    if not st.session_state.documents:
+
+        st.warning(
+            "No PDF, DOCX, or TXT knowledge documents were found "
+            "in the Knowledge Base folder."
+        )
+
+        return
+
+    st.success(
+        f"{len(st.session_state.documents)} "
+        "knowledge document(s) loaded automatically."
+    )
+
+    with st.expander(
+        "Knowledge base status"
+    ):
+
+        for key, description in DOCUMENT_NAMES.items():
+
+            if key in st.session_state.documents:
+
+                stats = (
+                    st.session_state.document_stats.get(
+                        key,
+                        {},
+                    )
+                )
+
+                st.write(
+                    f"✓ **{description}** — "
+                    f"{stats.get('words', 0):,} words, "
+                    f"{stats.get('chunks', 0)} chunks"
+                )
+
+            else:
+
+                st.write(
+                    f"○ **{description}** — not found"
+                )
+
+        # Show any additional documents.
+
+        recognised_keys = set(
+            DOCUMENT_NAMES.keys()
+        )
+
+        additional_documents = [
+            key
+            for key in st.session_state.documents
+            if key not in recognised_keys
+        ]
+
+        if additional_documents:
+
+            st.markdown(
+                "**Additional knowledge-base documents**"
+            )
+
+            for key in additional_documents:
+
+                stats = (
+                    st.session_state.document_stats.get(
+                        key,
+                        {},
+                    )
+                )
+
+                st.write(
+                    f"✓ **{key}** — "
+                    f"{stats.get('words', 0):,} words, "
+                    f"{stats.get('chunks', 0)} chunks"
+                )
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.header("⚙️ Setup")
+
+    # The user does NOT enter an API key.
+    # This only confirms that the administrator
+    # has configured the application.
+
+    st.success(
+        "OpenAI API configured"
+    )
+
+    model = st.selectbox(
+        "Model",
+        [
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+        ],
+        index=0,
+    )
+
+    st.divider()
+
+    st.header("📚 Knowledge Base")
+
+    st.info(
+        "Institutional knowledge documents are loaded "
+        "automatically from the application's "
+        "`Knowledge Base` folder."
+    )
+
+    st.caption(
+        f"Folder: `{KNOWLEDGE_BASE_DIR}`"
+    )
+
+    st.caption(
+        f"{len(documents)} document(s) loaded."
+    )
+
+    st.divider()
+
+    if st.button(
+        "Restart conversation",
+        use_container_width=True,
+    ):
+
+        reset_chat()
+
+        st.rerun()
+
+
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
+
+st.title(
+    "📚 Research Support Assistant"
+)
+
+st.caption(
+    "Institutional knowledge, study proposal support, "
+    "study design guidance, and analysis review"
+)
+
+
+# ============================================================
+# IMPORTANT NOTICE
+# ============================================================
+
+with st.expander(
+    "⚠️ IMPORTANT NOTICE — Please read before using this application",
+    expanded=True,
+):
+
+    st.markdown(
+        """
+        <div style="
+            padding: 1.25rem;
+            border: 2px solid #d97706;
+            border-radius: 10px;
+            background-color: #fff7ed;
+            margin: 0.25rem 0 0.75rem 0;
+        ">
+
+        <h3 style="margin-top: 0;">
+            IMPORTANT NOTICE
+        </h3>
+
+        <p>
+            This web application is a prototype developed for
+            <strong>educational purposes only</strong>.
+            The information provided here is
+            <strong>NOT intended for real-world use</strong>
+            and should not be relied upon for making decisions,
+            especially those related to financial, legal, or
+            healthcare matters.
+        </p>
+
+        <p>
+            Please also be aware that the LLM may generate
+            inaccurate, incomplete, or incorrect information.
+        </p>
+
+        <p>
+            <strong>
+                You assume responsibility for how you use any
+                generated output.
+            </strong>
+        </p>
+
+        <p style="margin-bottom: 0;">
+            Always consult qualified professionals for accurate
+            and personalised advice.
+        </p>
+
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# INTRODUCTION
+# ============================================================
+
+if not st.session_state.messages:
+
+    intro = """
+I am a research support assistant for institutional research staff.
+
+I can help with four workflows:
+
+1. **Institutional knowledge search**
+2. **Study proposal / information sourcing**
+3. **Study design guidance**
+4. **Analysis review**
+
+My answers are grounded in the institutional documents stored
+in the application's **Knowledge Base** folder and information
+that you provide during the conversation.
+
+You can also upload a PDF, DOCX, or TXT document to provide
+additional material for the current conversation.
+
+Please choose a workflow below to begin.
+"""
+
+    add_assistant_message(intro)
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+show_document_status()
+
+show_workflow_status()
+
+
+# ============================================================
+# CONVERSATION
+# ============================================================
+
+for message in st.session_state.messages:
+
+    with st.chat_message(
+        message["role"]
+    ):
+
+        st.markdown(
+            message["content"]
+        )
+
+
+# ============================================================
+# WORKFLOW SELECTION
+# ============================================================
+
+st.subheader(
+    "Start here"
+)
+
+
+options = {
+    "I want information from our database": "knowledge",
+    "I want to conduct a study": "study",
+    "I want advice on my study design": "design",
+    "I want advice on my analysis": "analysis",
+}
+
+
+selected = st.radio(
+    "Choose a workflow",
+    list(options.keys()),
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+
+if st.button(
+    "Continue",
+    type="primary",
+):
+
+    mode = options[selected]
+
+    st.session_state.mode = mode
+
+    st.session_state.workflow_step = 1
+
+    prompts = {
+
+        "knowledge": """
+## Step 1: Knowledge Database Search
+
+Tell me what you would like to find in the institutional
+knowledge base.
+
+I will search the institutional documents stored in the
+Knowledge Base folder and identify the relevant information
+and sources.
+
+You may also upload a document if you want me to consider
+user-provided material alongside the institutional sources.
+""",
+
+        "study": """
+## Step 1: Study Information & Request
+
+I will help you work through the study-request process using
+the **NCSS Studies form**.
+
+Please describe whatever you already know about the proposed
+study, such as its purpose, population, setting, and main
+research question.
+
+You do not need to provide everything at once.
+
+You can also upload a draft study proposal or other relevant
+document for me to consider.
+""",
+
+        "design": """
+## Step 1: Study Design Guidance
+
+I will first establish the study information you already have.
+
+I will then use the previous WK studies and the study-design
+checklist to structure the design discussion.
+
+Please describe the study purpose, population, setting,
+research question, proposed design, and data source if known.
+
+You can also upload a study proposal or related document.
+""",
+
+        "analysis": """
+## Step 1: Analysis Review
+
+I will review your proposed analysis against the
+**Analysis review checklist for WK**.
+
+Please describe what you are trying to analyse, including
+the outcome, predictors, data structure, and planned analysis
+if these are already known.
+
+You can also upload your analysis plan, output, or related
+document for review.
+""",
+    }
+
+    add_assistant_message(
+        prompts[mode]
+    )
+
+    st.rerun()
+
+
+# ============================================================
+# USER DOCUMENT UPLOAD
+# ============================================================
+
+st.divider()
+
+st.subheader(
+    "📎 Upload a document"
+)
+
+st.caption(
+    "Upload a PDF, DOCX, or TXT document to provide additional "
+    "material for this conversation. Uploaded documents are "
+    "treated as user-provided information and are not added "
+    "to the institutional Knowledge Base."
+)
+
+
+uploaded_files = st.file_uploader(
+    "Choose document(s)",
+    type=[
+        "pdf",
+        "docx",
+        "txt",
+    ],
+    accept_multiple_files=True,
+    help=(
+        "Uploaded documents are used as user-provided context "
+        "during this conversation. They are not added to the "
+        "permanent Knowledge Base folder."
+    ),
+)
+
+
+if uploaded_files:
+
+    for uploaded_file in uploaded_files:
+
+        filename = uploaded_file.name
+
+        # Avoid extracting the same file repeatedly
+        # on every Streamlit rerun.
+
+        if filename not in st.session_state.uploaded_documents:
+
+            with st.spinner(
+                f"Reading {filename}..."
+            ):
+
+                extracted_text = (
+                    extract_text_from_uploaded_file(
+                        uploaded_file
+                    )
+                )
+
+            if extracted_text.strip():
+
+                extracted_text = normalise_text(
+                    extracted_text
+                )
+
+                st.session_state.uploaded_documents[
+                    filename
+                ] = extracted_text
+
+                st.session_state.uploaded_document_stats[
+                    filename
+                ] = {
+                    "words": len(
+                        extracted_text.split()
+                    ),
+                    "chunks": len(
+                        split_into_chunks(
+                            extracted_text
+                        )
+                    ),
+                }
+
+            else:
+
+                st.warning(
+                    f"Could not extract readable text "
+                    f"from {filename}."
+                )
+
+
+# ============================================================
+# DISPLAY UPLOADED DOCUMENTS
+# ============================================================
+
+if st.session_state.uploaded_documents:
+
+    st.success(
+        f"{len(st.session_state.uploaded_documents)} "
+        "user document(s) available to the assistant."
+    )
+
+    with st.expander(
+        "Uploaded documents",
+        expanded=True,
+    ):
+
+        for filename in (
+            st.session_state.uploaded_documents
+        ):
+
+            stats = (
+                st.session_state
+                .uploaded_document_stats
+                .get(
+                    filename,
+                    {},
+                )
+            )
+
+            st.write(
+                f"📄 **{filename}** — "
+                f"{stats.get('words', 0):,} words, "
+                f"{stats.get('chunks', 0)} chunks"
+            )
+
+        st.caption(
+            "These documents are user-provided material. "
+            "They are not treated as institutional policy "
+            "or as part of the permanent Knowledge Base."
+        )
+
+    if st.button(
+        "🗑️ Clear uploaded documents",
+        use_container_width=True,
+    ):
+
+        st.session_state.uploaded_documents = {}
+
+        st.session_state.uploaded_document_stats = {}
+
+        st.rerun()
+
+
+# ============================================================
+# CHAT INPUT
+# ============================================================
+
+prompt = st.chat_input(
+    "Ask a question or provide study details..."
+)
+
+
+# ============================================================
+# PROCESS CHAT MESSAGE
+# ============================================================
+
+if prompt:
+
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": prompt,
+        }
+    )
+
+    update_form_data_from_prompt(
+        prompt
+    )
+
+    with st.chat_message("user"):
+
+        st.markdown(
+            prompt
+        )
+
+    # The institutional Knowledge Base is still required
+    # for the application's normal workflows.
+
+    if not documents:
+
+        st.error(
+            "The Knowledge Base folder does not contain any "
+            "readable PDF, DOCX, or TXT documents."
+        )
+
+    else:
+
+        mode = (
+            st.session_state.mode
+            or "knowledge"
+        )
+
+        client = get_client()
+
+        with st.chat_message(
+            "assistant"
+        ):
+
+            with st.spinner(
+                "Searching the institutional knowledge base "
+                "and reviewing the supplied material..."
+            ):
+
+                try:
+
+                    response = generate_response(
+                        client=client,
+                        model=model,
+                        mode=mode,
+                        user_prompt=prompt,
+                        documents=documents,
+                    )
+
+                    st.markdown(
+                        response
+                    )
+
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": response,
+                        }
+                    )
+
+                    st.session_state.workflow_step += 1
+
+                except Exception as exc:
+
+                    st.error(
+                        "I couldn't complete that request. "
+                        "Please try again or contact the "
+                        "application administrator."
+                    )
+
+                    # Keep the detailed exception out of
+                    # the user interface for security.
+                    # The exception can be logged separately
+                    # if application logging is added.
+>>>>>>> 2caf182 (Update institutional research support assistant)
