@@ -55,9 +55,21 @@ SUPPORTED_UPLOADS = {"txt", "md", "csv", "json", "pdf", "docx"}
 # ---------------------------------------------------------------------------
 
 def find_content_folder(name: str) -> Path:
-    """Find content beside the script or in the bundled streamlit subfolder."""
-    candidates = (APP_DIR / name, APP_DIR / "streamlit" / name)
-    return next((path for path in candidates if path.is_dir()), candidates[0])
+    """Find a content folder in the common Streamlit deployment layouts."""
+    candidates = [
+        APP_DIR / name,
+        APP_DIR / "streamlit" / name,
+        APP_DIR.parent / name,
+        APP_DIR.parent / "streamlit" / name,
+    ]
+
+    for path in candidates:
+        if path.is_dir():
+            return path
+
+    # Return the primary expected location so missing-content diagnostics
+    # remain meaningful.
+    return candidates[0]
 
 
 KB_DIR = find_content_folder("Knowledge base")
@@ -115,14 +127,24 @@ def read_text_file(path: Path) -> str:
 
 
 def find_named_file(folder: Path, stem: str) -> Path | None:
+    """Find a named source file robustly, including nested deployment folders."""
     if not folder.exists():
         return None
 
-    matches = [
-        p for p in folder.iterdir()
-        if p.is_file() and p.stem.casefold() == stem.casefold()
-    ]
-    return matches[0] if matches else None
+    target = re.sub(r"\s+", " ", stem.strip()).casefold()
+    candidates = [p for p in folder.rglob("*") if p.is_file()]
+
+    # First: exact stem match.
+    for path in candidates:
+        if re.sub(r"\s+", " ", path.stem.strip()).casefold() == target:
+            return path
+
+    # Second: exact filename without extension.
+    for path in candidates:
+        if re.sub(r"\s+", " ", path.name.rsplit(".", 1)[0].strip()).casefold() == target:
+            return path
+
+    return None
 
 
 def source_documents(
@@ -169,35 +191,57 @@ def chunks(text: str, size: int = 900) -> list[str]:
 def retrieve(
     query: str,
     docs: list[tuple[str, str]],
-    limit: int = 8,
+    limit: int = 10,
 ) -> list[tuple[str, str]]:
-    """
-    Simple keyword retrieval.
+    """Retrieve relevant passages using weighted keyword matching.
 
-    This is intentionally lightweight so the app remains easy to deploy.
-    The LLM is instructed to distinguish retrieved source material from
-    general research guidance.
+    The retrieval is deliberately transparent and dependency-free. Exact
+    phrase matches, important query terms, and filename matches receive extra
+    weight. If there are no matches, the first useful passage from each source
+    is returned rather than sending an empty evidence packet to the model.
     """
-    terms = {
-        token
-        for token in re.findall(r"[a-z0-9]{3,}", query.casefold())
+    query_text = re.sub(r"\s+", " ", query.casefold()).strip()
+    terms = {t for t in re.findall(r"[a-z0-9]{3,}", query_text)}
+    stop = {
+        "the", "and", "for", "that", "this", "with", "from", "what",
+        "how", "can", "does", "are", "was", "were", "about", "study",
+        "research", "would", "could", "should", "have", "has", "into",
     }
+    useful_terms = terms - stop
 
-    scored: list[tuple[int, str, str]] = []
+    scored: list[tuple[float, int, str, str]] = []
 
+    for doc_index, (name, text) in enumerate(docs):
+        name_terms = set(re.findall(r"[a-z0-9]{3,}", name.casefold()))
+        for chunk_index, chunk in enumerate(chunks(text)):
+            chunk_lower = chunk.casefold()
+            words = set(re.findall(r"[a-z0-9]{3,}", chunk_lower))
+            overlap = len(useful_terms & words)
+            phrase_bonus = 3 if query_text and query_text in chunk_lower else 0
+            filename_bonus = 2 if useful_terms & name_terms else 0
+            score = overlap * 2 + phrase_bonus + filename_bonus
+            scored.append((score, -chunk_index, name, chunk))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+    selected = [
+        (name, chunk)
+        for score, _, name, chunk in scored
+        if score > 0
+    ][:limit]
+
+    if selected:
+        return selected
+
+    # Never give the model an empty evidence packet when source files exist.
+    fallback: list[tuple[str, str]] = []
     for name, text in docs:
-        for chunk in chunks(text):
-            words = set(
-                re.findall(r"[a-z0-9]{3,}", chunk.casefold())
-            )
-            score = len(terms & words)
-
-            if score:
-                scored.append((score, name, chunk))
-
-    scored.sort(key=lambda item: item[0], reverse=True)
-
-    return [(name, chunk) for _, name, chunk in scored[:limit]]
+        first = chunks(text, size=900)
+        if first:
+            fallback.append((name, first[0]))
+        if len(fallback) >= limit:
+            break
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -231,9 +275,10 @@ def call_llm(messages: list[dict[str, str]]) -> str | None:
     endpoint = f"{base_url}/chat/completions"
 
     payload = {
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         "messages": messages,
-        "temperature": 0.2,
+        "temperature": 0.15,
+        "max_tokens": 2500,
     }
 
     request = urllib.request.Request(
@@ -278,6 +323,11 @@ for NCSS.
 
 Your job is to help a researcher think clearly, make defensible methodological
 choices, identify weaknesses, and decide what information is needed next.
+Reason through the methodological problem internally before answering. Do not
+just repeat the checklist or summarize the documents. The user should receive
+a considered research recommendation tied to their question, evidence, and
+constraints. Do not expose private chain-of-thought; provide the conclusions
+and concise methodological rationale instead.
 
 GENERAL RESEARCH ADVICE
 - Be methodologically rigorous but explain concepts in plain language.
@@ -402,9 +452,57 @@ For research design or analysis matters, users may request a consultation at
 mechanically in every answer.
 
 SOURCE EXCERPTS
-{context or "[No matching source excerpts were found.]"}
+The excerpts below are the only supplied documentary evidence available in
+this response. They may include institutional knowledge, an NCSS checklist,
+or a document uploaded by the researcher. Use them according to their labels.
+{context or "[No readable source excerpts were found.]"}
 """
     )
+
+
+def build_source_packet(
+    mode: str,
+    query: str,
+    kb_docs: list[tuple[str, str]],
+    checklist_docs: list[tuple[str, str]],
+    uploaded_docs: list[tuple[str, str]],
+) -> tuple[str, list[tuple[str, str]]]:
+    """Build a focused evidence packet for the current question.
+
+    Institutional knowledge is available in every service. The design and
+    analysis services additionally receive their relevant checklist and any
+    documents uploaded by the researcher.
+    """
+    if mode == MODES[0]:
+        selected = retrieve(query, kb_docs, limit=12)
+        return (
+            "\n\n".join(f"[Source: {name}]\n{chunk}" for name, chunk in selected),
+            selected,
+        )
+
+    # Always retrieve the institutional knowledge base as well as the
+    # checklist. This is important for research-design questions because
+    # previous studies can inform the design and feasibility discussion.
+    kb_selected = retrieve(query, kb_docs, limit=8)
+    checklist_selected = retrieve(query, checklist_docs, limit=8)
+    upload_selected = retrieve(query, uploaded_docs, limit=6) if uploaded_docs else []
+
+    combined: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for item in [*kb_selected, *checklist_selected, *upload_selected]:
+        if item not in seen:
+            combined.append(item)
+            seen.add(item)
+
+    # Keep the evidence packet bounded so the model has room to reason and
+    # provide advice rather than spending its context on raw documents.
+    combined = combined[:18]
+    packet = "\n\n".join(
+        f"[Source: {name}]\n{chunk}"
+        for name, chunk in combined
+    )
+    return packet, combined
 
 
 # ---------------------------------------------------------------------------
@@ -732,19 +830,21 @@ def main() -> None:
     # Select source material
     # -----------------------------------------------------------------------
 
-    if mode == MODES[0]:
-        kb_docs = source_documents(KB_DIR, KB_FILES)
-    else:
+    # Load the institutional knowledge base for EVERY service.
+    # Research-design and analysis questions can therefore draw on both
+    # previous/institutional studies and the relevant checklist.
+    kb_docs = source_documents(KB_DIR, KB_FILES)
+
+    checklist_docs: list[tuple[str, str]] = []
+    if mode != MODES[0]:
         checklist_name = CHECKLIST_FILES[mode]
         checklist_docs = source_documents(
             CHECKLIST_DIR,
             [checklist_name],
         )
-        kb_docs = checklist_docs + uploaded_docs
 
-    # Deliberately no st.info() boxes here.
-    # Missing source files are handled inside the conversation instead of
-    # producing a prominent blue workflow/source box after "Clear conversation".
+    # Deliberately no st.info() boxes here. Missing source files are handled
+    # quietly by the assistant instead of producing a prominent workflow box.
 
     # -----------------------------------------------------------------------
     # Conversation
@@ -820,18 +920,15 @@ def main() -> None:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Retrieve only the most relevant chunks for the current question.
-    # This keeps the prompt focused and reduces the chance of irrelevant
-    # checklist material overwhelming the model.
-    selected = retrieve(
+    # Build a focused evidence packet. In research-design and analysis modes
+    # this includes the institutional knowledge base, the relevant checklist,
+    # and any documents uploaded by the researcher.
+    context, selected = build_source_packet(
+        mode,
         prompt,
         kb_docs,
-        limit=8,
-    )
-
-    context = "\n\n".join(
-        f"[{name}]\n{text}"
-        for name, text in selected
+        checklist_docs,
+        uploaded_docs,
     )
 
     system = grounded_system(mode, context)
