@@ -7,6 +7,9 @@ import os
 import re
 import urllib.error
 import urllib.request
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable
 
@@ -14,8 +17,16 @@ import streamlit as st
 
 
 APP_DIR = Path(__file__).resolve().parent
-KB_DIR = APP_DIR / "Knowledge base"
-CHECKLIST_DIR = APP_DIR / "Checklist"
+
+
+def find_content_folder(name: str) -> Path:
+    """Find content beside the script or in the bundled streamlit subfolder."""
+    candidates = (APP_DIR / name, APP_DIR / "streamlit" / name)
+    return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
+KB_DIR = find_content_folder("Knowledge base")
+CHECKLIST_DIR = find_content_folder("Checklist")
 CONSULTATION = "research@ncss.gov.sg"
 MODES = (
     "Look for institutional information",
@@ -34,6 +45,20 @@ CHECKLIST_FILES = {
 SUPPORTED_UPLOADS = {"txt", "md", "csv", "json", "pdf", "docx"}
 
 
+def docx_text(data: bytes) -> str:
+    """Extract paragraph text from DOCX with Python's standard library."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        xml_data = archive.read("word/document.xml")
+    root = ET.fromstring(xml_data)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs = []
+    for paragraph in root.findall(".//w:p", ns):
+        text = "".join(node.text or "" for node in paragraph.findall(".//w:t", ns))
+        if text.strip():
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
 def read_text_file(path: Path) -> str:
     """Read a supported source file, returning an empty string on parse errors."""
     suffix = path.suffix.lower()
@@ -41,17 +66,14 @@ def read_text_file(path: Path) -> str:
         if suffix in {".txt", ".md", ".csv", ".json"}:
             return path.read_text(encoding="utf-8", errors="replace")
         if suffix == ".pdf":
-            from pypdf import PdfReader
+            try:
+                from pypdf import PdfReader
+            except ImportError as exc:
+                return "[PDF support requires pypdf. Install it with: python -m pip install pypdf]"
 
             return "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages)
         if suffix == ".docx":
-            from docx import Document
-
-            doc = Document(str(path))
-            parts = [p.text for p in doc.paragraphs]
-            for table in doc.tables:
-                parts.extend(" | ".join(cell.text for cell in row.cells) for row in table.rows)
-            return "\n".join(parts)
+            return docx_text(path.read_bytes())
     except Exception as exc:  # keep one malformed file from breaking the app
         return f"[Could not read {path.name}: {exc}]"
     return ""
@@ -171,16 +193,13 @@ def main() -> None:
             if suffix in {".txt", ".md", ".csv", ".json"}:
                 content = item.getvalue().decode("utf-8", errors="replace")
             elif suffix == ".pdf":
-                from pypdf import PdfReader
-                import io
-
+                try:
+                    from pypdf import PdfReader
+                except ImportError as exc:
+                    raise RuntimeError("PDF support requires pypdf. Install it with: python -m pip install pypdf") from exc
                 content = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(item.getvalue())).pages)
             elif suffix == ".docx":
-                from docx import Document
-                import io
-
-                doc = Document(io.BytesIO(item.getvalue()))
-                content = "\n".join([p.text for p in doc.paragraphs] + [" | ".join(c.text for c in r.cells) for t in doc.tables for r in t.rows])
+                content = docx_text(item.getvalue())
             else:
                 content = ""
             if content.strip():
@@ -205,7 +224,13 @@ def main() -> None:
         kb_docs = source_documents(KB_DIR, KB_FILES)
         missing = [stem for stem in KB_FILES if find_named_file(KB_DIR, stem) is None]
         if missing:
-            st.info("Institutional knowledge base setup needed: add these files to `Knowledge base`: " + ", ".join(f"{name} (any supported extension)" for name in missing) + ".")
+            expected = "; ".join(f"`{KB_DIR / (name + '.*')}`" for name in missing)
+            st.info(
+                "Institutional source files are not available yet. Add the supplied files "
+                f"{', '.join(f'`{name}`' for name in missing)} to `{KB_DIR}` using a supported extension "
+                f"(.txt, .md, .csv, .json, .pdf, or .docx). Expected location: {expected}. "
+                "Institutional answers will be limited to these source files."
+            )
     else:
         checklist_name = CHECKLIST_FILES[mode]
         checklist_docs = source_documents(CHECKLIST_DIR, [checklist_name])
