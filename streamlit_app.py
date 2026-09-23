@@ -55,12 +55,7 @@ SUPPORTED_UPLOADS = {"txt", "md", "csv", "json", "pdf", "docx"}
 # ---------------------------------------------------------------------------
 
 def find_content_folder(name: str) -> Path:
-    """Find named content folders and adjacent project directories.
-
-    Source files remain allow-listed by KB_FILES and CHECKLIST_FILES. This
-    also supports the Desktop layout where the exact named files are stored
-    directly in the adjacent AI bootcamp project directory.
-    """
+    """Find a content folder in the common Streamlit deployment layouts."""
     candidates = [
         APP_DIR / name,
         APP_DIR / "streamlit" / name,
@@ -68,41 +63,9 @@ def find_content_folder(name: str) -> Path:
         APP_DIR.parent / "streamlit" / name,
     ]
 
-    for base in (APP_DIR,):
-        try:
-            children = [child for child in base.iterdir() if child.is_dir()]
-        except OSError:
-            children = []
-        for child in children:
-            candidates.extend((child / name, child / "streamlit" / name, child))
-
-    expected = (
-        KB_FILES if name == "Knowledge base"
-        else tuple(CHECKLIST_FILES.values()) if name == "Checklist"
-        else ()
-    )
     for path in candidates:
-        if not path.is_dir():
-            continue
-        if path.name.casefold() == name.casefold():
+        if path.is_dir():
             return path
-        # Accept a project directory itself only when it contains an exact
-        # expected source filename.
-        if expected:
-            try:
-                file_stems = {
-                    re.sub(r"\s+", " ", child.stem.strip()).casefold()
-                    for child in path.iterdir()
-                    if child.is_file()
-                }
-            except OSError:
-                file_stems = set()
-            expected_stems = {
-                re.sub(r"\s+", " ", stem.strip()).casefold()
-                for stem in expected
-            }
-            if file_stems & expected_stems:
-                return path
 
     # Return the primary expected location so missing-content diagnostics
     # remain meaningful.
@@ -170,18 +133,6 @@ def find_named_file(folder: Path, stem: str) -> Path | None:
 
     target = re.sub(r"\s+", " ", stem.strip()).casefold()
     candidates = [p for p in folder.rglob("*") if p.is_file()]
-    # Prefer formats that are readable without optional PDF packages. Some
-    # source documents are supplied in both DOCX and PDF; picking the PDF
-    # first can otherwise silently feed only a missing-library error to RAG.
-    extension_rank = {
-        ".docx": 0,
-        ".txt": 1,
-        ".md": 2,
-        ".csv": 3,
-        ".json": 4,
-        ".pdf": 5,
-    }
-    candidates.sort(key=lambda path: extension_rank.get(path.suffix.lower(), 99))
 
     # First: exact stem match.
     for path in candidates:
@@ -206,7 +157,7 @@ def source_documents(
         path = find_named_file(folder, stem)
         if path:
             text = read_text_file(path).strip()
-            if text and not text.startswith(("[Could not read ", "[PDF support requires ")):
+            if text:
                 docs.append((path.name, text))
 
     return docs
@@ -523,11 +474,9 @@ def build_source_packet(
     documents uploaded by the researcher.
     """
     if mode == MODES[0]:
-        # Use both full, allow-listed institutional files. This avoids missing
-        # relevant studies when user wording differs from the source wording.
-        selected = [(name, text[:60000]) for name, text in kb_docs if text.strip()]
+        selected = retrieve(query, kb_docs, limit=12)
         return (
-            "\n\n".join(f"[Source: {name}]\n{content}" for name, content in selected),
+            "\n\n".join(f"[Source: {name}]\n{chunk}" for name, chunk in selected),
             selected,
         )
 
@@ -535,11 +484,7 @@ def build_source_packet(
     # checklist. This is important for research-design questions because
     # previous studies can inform the design and feasibility discussion.
     kb_selected = retrieve(query, kb_docs, limit=8)
-    # Always supply the full checklist so the model can use its questions and
-    # pointers even when their wording differs from the user's prompt.
-    checklist_selected = [
-        (name, text[:40000]) for name, text in checklist_docs if text.strip()
-    ]
+    checklist_selected = retrieve(query, checklist_docs, limit=8)
     upload_selected = retrieve(query, uploaded_docs, limit=6) if uploaded_docs else []
 
     combined: list[tuple[str, str]] = []
@@ -558,34 +503,6 @@ def build_source_packet(
         for name, chunk in combined
     )
     return packet, combined
-
-
-def infer_question_mode(query: str, selected_mode: str) -> str:
-    """Route clear research-method questions from the default service.
-
-    Explicitly chosen design or analysis services always take precedence.
-    """
-    if selected_mode != MODES[0]:
-        return selected_mode
-
-    text = query.casefold()
-    analysis_terms = (
-        "analysis", "analyse", "analyze", "statistical", "regression",
-        "p-value", "p value", "significance", "missing data", "dataset",
-        "which test", "which model", "interpret these results",
-    )
-    design_terms = (
-        "research design", "study design", "methodology", "sampling",
-        "sample size", "recruitment", "questionnaire", "survey design",
-        "research question", "design a study", "design my study",
-        "conduct a study", "conduct research", "plan a study",
-        "planning a study", "study plan", "comparison group",
-    )
-    if any(term in text for term in analysis_terms):
-        return MODES[2]
-    if any(term in text for term in design_terms):
-        return MODES[1]
-    return selected_mode
 
 
 # ---------------------------------------------------------------------------
@@ -898,7 +815,6 @@ def main() -> None:
     if current_mode != st.session_state.active_mode:
         st.session_state.messages = []
         st.session_state.active_mode = current_mode
-        st.session_state.response_mode = current_mode
 
     mode = current_mode
 
@@ -919,21 +835,16 @@ def main() -> None:
     # previous/institutional studies and the relevant checklist.
     kb_docs = source_documents(KB_DIR, KB_FILES)
 
-    checklist_docs_by_mode = {
-        service: source_documents(CHECKLIST_DIR, [stem])
-        for service, stem in CHECKLIST_FILES.items()
-    }
-    loaded_kb_names = ", ".join(name for name, _ in kb_docs) or "none found"
-    st.caption(
-        f"Knowledge base sources loaded: {loaded_kb_names}. "
-        f"Source folder: {KB_DIR}"
-    )
-    loaded_checklists = ", ".join(
-        name
-        for service_docs in checklist_docs_by_mode.values()
-        for name, _ in service_docs
-    ) or "none found"
-    st.caption(f"Research checklist sources loaded: {loaded_checklists}.")
+    checklist_docs: list[tuple[str, str]] = []
+    if mode != MODES[0]:
+        checklist_name = CHECKLIST_FILES[mode]
+        checklist_docs = source_documents(
+            CHECKLIST_DIR,
+            [checklist_name],
+        )
+
+    # Deliberately no st.info() boxes here. Missing source files are handled
+    # quietly by the assistant instead of producing a prominent workflow box.
 
     # -----------------------------------------------------------------------
     # Conversation
@@ -1002,22 +913,6 @@ def main() -> None:
     if not prompt:
         return
 
-    response_mode = infer_question_mode(prompt, mode)
-    previous_response_mode = st.session_state.get("response_mode", mode)
-    short_follow_up = len(prompt.split()) <= 8
-    if (
-        response_mode == mode
-        and previous_response_mode != mode
-        and short_follow_up
-    ):
-        response_mode = previous_response_mode
-    st.session_state.response_mode = response_mode
-    if response_mode != mode:
-        st.caption(
-            f"This question looks like {response_mode.lower()}; "
-            "I’m using that service and its checklist for this reply."
-        )
-
     st.session_state.messages.append(
         {"role": "user", "content": prompt}
     )
@@ -1029,14 +924,14 @@ def main() -> None:
     # this includes the institutional knowledge base, the relevant checklist,
     # and any documents uploaded by the researcher.
     context, selected = build_source_packet(
-        response_mode,
+        mode,
         prompt,
         kb_docs,
-        checklist_docs_by_mode.get(response_mode, []),
+        checklist_docs,
         uploaded_docs,
     )
 
-    system = grounded_system(response_mode, context)
+    system = grounded_system(mode, context)
 
     # Keep recent history, but avoid allowing the conversation to grow
     # indefinitely.
@@ -1055,11 +950,6 @@ def main() -> None:
         ]
     )
 
-    model_issue = ""
-    if answer and answer.startswith("I couldn't reach the configured language model."):
-        model_issue = answer
-        answer = None
-
     # -----------------------------------------------------------------------
     # Graceful fallback when no API key is configured
     # -----------------------------------------------------------------------
@@ -1068,11 +958,11 @@ def main() -> None:
         if selected:
             excerpts = "\n\n".join(
                 f"**{name}:**\n> "
-                + (text[:1800].replace("\n", "\n> ") + ("…" if len(text) > 1800 else ""))
+                + text.replace("\n", "\n> ")
                 for name, text in selected
             )
 
-            if response_mode == MODES[0]:
+            if mode == MODES[0]:
                 answer = (
                     "I found the following relevant passages in the "
                     "institutional files:\n\n"
@@ -1080,67 +970,29 @@ def main() -> None:
                     "The language model is not currently configured, so I "
                     "cannot provide the research interpretation layer."
                 )
-            elif response_mode == MODES[1]:
-                answer = (
-                    "The language model is not available, so I can’t tailor a "
-                    "full recommendation yet. As a starting point, align the "
-                    "design with the question: use a descriptive design to "
-                    "estimate how common something is, repeated measurements "
-                    "to study change over time, and a comparison group when "
-                    "you need to assess differences between groups. Check "
-                    "whether the sample and measures represent the population "
-                    "you want to describe, and avoid causal claims from a "
-                    "one-time observational survey.\n\n"
-                    "To work through the supplied study design checklist, "
-                    "please share your research question, target population, "
-                    "and what data or access you already have.\n\n"
-                    f"{excerpts}"
-                )
             else:
                 answer = (
-                    "The language model is not available, so I can’t tailor "
-                    "a full analysis recommendation yet. As a starting point, "
-                    "choose the analysis from the outcome type and study "
-                    "design, account for clustering and missing data, check "
-                    "model assumptions, and report effect sizes with "
-                    "uncertainty rather than relying only on p-values.\n\n"
-                    "Please share your research question, outcome and key "
-                    "predictors, sample size, and study design so the analysis "
-                    "review checklist can be applied.\n\n"
-                    f"{excerpts}"
+                    "I found these relevant passages in the supplied "
+                    "research materials:\n\n"
+                    f"{excerpts}\n\n"
+                    "The language model is not currently configured, so I "
+                    "cannot provide the full research-advice layer."
                 )
 
-        elif response_mode == MODES[0]:
+        elif mode == MODES[0]:
             answer = (
                 "I could not find a matching passage in the institutional "
                 "knowledge base. I therefore cannot confirm an institutional "
                 "answer from the supplied sources."
             )
 
-        elif response_mode == MODES[1]:
-            answer = (
-                "I can offer general design guidance, but I could not load the "
-                "study design checklist. Start by stating the research "
-                "question, target population, main outcome, and timeline. "
-                "Then choose a design that can answer that question with the "
-                "data and access you can realistically obtain. A single "
-                "cross-sectional survey can describe or compare responses, "
-                "but usually cannot establish that one factor caused another. "
-                f"For a consultation, contact {CONSULTATION}."
-            )
         else:
             answer = (
-                "I can offer general analysis guidance, but I could not load "
-                "the analysis review checklist. Please share your research "
-                "question, outcome and predictors, study design, and sample "
-                "size. Check that the method matches the outcome and design, "
-                "review missingness and assumptions, and report effect sizes "
-                "with uncertainty. "
-                f"For a consultation, contact {CONSULTATION}."
+                "I do not currently have matching passages from the research "
+                "materials. You can still describe your research question, "
+                "population, data, and intended analysis; with the language "
+                "model configured, I can provide general research guidance."
             )
-
-        if model_issue:
-            answer += "\n\nThe language model could not be reached: " + model_issue
 
     with st.chat_message("assistant"):
         st.markdown(answer)
