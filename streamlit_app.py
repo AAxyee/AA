@@ -467,17 +467,28 @@ Before recommending a statistical method, consider:
 When interpreting results, distinguish statistical significance from substantive
 importance and avoid causal language unless justified by the design.
 
-SOURCE USE
-The source excerpts supplied below are evidence from the app's knowledge base,
-checklists, or documents uploaded by the user.
+SOURCE USE — MANDATORY
+The documentary material under SOURCE EXCERPTS is not optional background.
+Read it and use it before answering.
 
-- If a claim comes from a supplied source, identify it with:
-  "(Source: filename)".
-- Do not attribute a claim to a source unless the excerpt actually supports it.
-- If the supplied sources do not answer a factual institutional question, say so.
-- General research methodology may be provided from established methodological
-  knowledge, but label it clearly as "General research guidance" when useful.
-- Never manufacture a source citation.
+- Institutional facts, policies, procedures, previous studies, requirements,
+  forms, and institutional practices MUST come from the supplied files.
+- Cite each source-derived point using "(Source: filename)".
+- For "Look for institutional information", answer ONLY from KNOWLEDGE BASE
+  files. Do not use general knowledge to fill gaps.
+- For research design and analysis, use CHECKLIST files as the primary
+  institutional framework. Explicitly apply relevant checklist points to the
+  user's question.
+- Knowledge Base files may supplement design/analysis with institutional
+  context and previous-study information.
+- User uploads may supplement the user's study-specific context.
+- If the documentary sources do not contain an institutional answer, say
+  exactly: "I don't see that information in our current knowledge base."
+- Never invent a policy, requirement, study, deadline, approval process,
+  checklist item, statistic, or citation.
+- General methodological knowledge is allowed only for design/analysis advice.
+  Put it under "General research guidance" so it is clearly separated from
+  source-based institutional information.
 
 RESPONSE STYLE
 Use short headings and bullets where they improve readability.
@@ -498,18 +509,20 @@ the issues that materially affect the decision at hand.
         MODES[0]: """
 CURRENT SERVICE: Institutional information.
 
-For this service, institutional facts must be grounded in the supplied
-institutional knowledge-base excerpts only. Do not use general knowledge to
-fill an institutional gap. If the answer cannot be confirmed from the
-provided material, say that clearly and suggest what source or document would
-need to be checked.
+For this service, read the supplied KNOWLEDGE BASE FILE sections and answer
+from them only. Every substantive institutional claim must include
+"(Source: filename)". Do not answer from model memory or general knowledge.
+If the answer cannot be confirmed from these files, say exactly:
+"I don't see that information in our current knowledge base."
+Then state what information is missing.
 """,
         MODES[1]: """
 CURRENT SERVICE: Source for new information / advice on research design.
 
-Use the study design checklist as a framework rather than dumping the checklist
-back to the user. Help the user work through the most relevant questions,
-explain why they matter, and translate them into practical design decisions.
+Read the supplied CHECKLIST FILE sections before giving design advice.
+Use relevant checklist items as the primary framework, cite the checklist
+filename, and translate those items into practical design decisions rather
+than merely repeating the checklist.
 
 You may provide general research-methodology guidance in addition to the
 checklist, but clearly distinguish it from checklist/source-based information.
@@ -517,10 +530,10 @@ checklist, but clearly distinguish it from checklist/source-based information.
         MODES[2]: """
 CURRENT SERVICE: Advice on analysis.
 
-Use the analysis review checklist as a framework rather than merely repeating
-it. Help the user diagnose the analysis problem, identify what information is
-missing, choose an appropriate method, and understand assumptions and
-interpretation.
+Read the supplied CHECKLIST FILE sections before giving analysis advice.
+Use relevant checklist items as the primary framework, cite the checklist
+filename, and apply those items to the user's analysis problem rather than
+merely repeating the checklist.
 
 You may provide general statistical guidance in addition to the supplied
 checklist or uploaded documents, but clearly distinguish the two.
@@ -554,45 +567,100 @@ def build_source_packet(
     checklist_docs: list[tuple[str, str]],
     uploaded_docs: list[tuple[str, str]],
 ) -> tuple[str, list[tuple[str, str]]]:
-    """Build the evidence packet from the appropriate source folders.
+    """Build documentary context for the current service.
 
-    Institutional-information questions use only Knowledge Base.
-    Research-design and analysis questions use Checklist first, supplemented
-    by relevant Knowledge Base material and session uploads.
+    IMPORTANT:
+    - Institutional information uses the Knowledge Base folder.
+    - Research design / analysis use the Checklist folder as the primary
+      institutional framework.
+    - We pass substantial document text directly instead of relying only on
+      lexical retrieval, because keyword retrieval can miss relevant sections.
     """
+
+    def bounded_documents(
+        docs: list[tuple[str, str]],
+        per_file_chars: int,
+        total_chars: int,
+    ) -> list[tuple[str, str]]:
+        selected: list[tuple[str, str]] = []
+        used = 0
+
+        for name, content in docs:
+            clean = content.strip()
+            if not clean:
+                continue
+
+            remaining = total_chars - used
+            if remaining <= 0:
+                break
+
+            excerpt = clean[: min(per_file_chars, remaining)]
+            selected.append((name, excerpt))
+            used += len(excerpt)
+
+        return selected
+
     if mode == MODES[0]:
-        # Do not use general knowledge to answer institutional questions.
-        selected = retrieve(query, kb_docs, limit=12)
+        # Institutional-information mode is grounded ONLY in Knowledge Base.
+        selected = bounded_documents(
+            kb_docs,
+            per_file_chars=30000,
+            total_chars=90000,
+        )
+
         packet = "\n\n".join(
-            f"[Source: {name}]\n{content}"
+            (
+                f"=== KNOWLEDGE BASE FILE: {name} ===\n"
+                f"{content}\n"
+                f"=== END KNOWLEDGE BASE FILE: {name} ==="
+            )
             for name, content in selected
         )
+
         return packet, selected
 
-    # Checklist is the primary source for design/analysis guidance.
-    checklist_selected = retrieve(query, checklist_docs, limit=8)
+    # Design / analysis: Checklist is the primary documentary source.
+    checklist_selected = bounded_documents(
+        checklist_docs,
+        per_file_chars=25000,
+        total_chars=65000,
+    )
+
+    # Knowledge Base can provide institutional context / previous studies.
     kb_selected = retrieve(query, kb_docs, limit=6) if kb_docs else []
-    upload_selected = (
-        retrieve(query, uploaded_docs, limit=6)
-        if uploaded_docs else []
-    )
 
-    combined: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
+    # User-uploaded material is relevant to the user's particular study.
+    upload_selected = retrieve(query, uploaded_docs, limit=6) if uploaded_docs else []
 
-    for item in [*checklist_selected, *kb_selected, *upload_selected]:
-        if item not in seen:
-            combined.append(item)
-            seen.add(item)
+    selected: list[tuple[str, str]] = []
+    selected.extend(checklist_selected)
+    selected.extend(kb_selected)
+    selected.extend(upload_selected)
 
-    combined = combined[:18]
+    packet_parts: list[str] = []
 
-    packet = "\n\n".join(
-        f"[Source: {name}]\n{chunk}"
-        for name, chunk in combined
-    )
+    for name, content in checklist_selected:
+        packet_parts.append(
+            f"=== CHECKLIST FILE: {name} ===\n"
+            f"{content}\n"
+            f"=== END CHECKLIST FILE: {name} ==="
+        )
 
-    return packet, combined
+    for name, content in kb_selected:
+        packet_parts.append(
+            f"=== KNOWLEDGE BASE FILE: {name} ===\n"
+            f"{content}\n"
+            f"=== END KNOWLEDGE BASE FILE: {name} ==="
+        )
+
+    for name, content in upload_selected:
+        packet_parts.append(
+            f"=== USER UPLOAD: {name} ===\n"
+            f"{content}\n"
+            f"=== END USER UPLOAD: {name} ==="
+        )
+
+    return "\n\n".join(packet_parts), selected
 
 
 def infer_question_mode(query: str, selected_mode: str) -> str:
@@ -955,16 +1023,34 @@ def main() -> None:
     checklist_docs = source_documents(CHECKLIST_DIR)
 
     loaded_kb_names = ", ".join(name for name, _ in kb_docs) or "none found"
-    st.caption(
-        f"Knowledge Base: {len(kb_docs)} file(s) loaded from {KB_DIR}. "
-        f"{loaded_kb_names}"
-    )
-
     loaded_checklists = ", ".join(name for name, _ in checklist_docs) or "none found"
-    st.caption(
-        f"Checklist: {len(checklist_docs)} file(s) loaded from {CHECKLIST_DIR}. "
-        f"{loaded_checklists}"
-    )
+
+    with st.expander("Source status", expanded=False):
+        st.markdown("**Knowledge Base**")
+        st.write(f"Folder: `{KB_DIR}`")
+        st.write(f"Readable files: {len(kb_docs)}")
+        if kb_docs:
+            for name, content in kb_docs:
+                st.write(f"✓ {name} — {len(content):,} characters extracted")
+        else:
+            st.error(
+                "No readable files were loaded from Knowledge Base. "
+                "Check the folder path, filenames, file formats, and whether "
+                "pypdf is installed for PDF files."
+            )
+
+        st.markdown("**Checklist**")
+        st.write(f"Folder: `{CHECKLIST_DIR}`")
+        st.write(f"Readable files: {len(checklist_docs)}")
+        if checklist_docs:
+            for name, content in checklist_docs:
+                st.write(f"✓ {name} — {len(content):,} characters extracted")
+        else:
+            st.error(
+                "No readable files were loaded from Checklist. "
+                "Check the folder path, filenames, file formats, and whether "
+                "pypdf is installed for PDF files."
+            )
 
     # -----------------------------------------------------------------------
     # Conversation
@@ -1066,6 +1152,35 @@ def main() -> None:
         checklist_docs,
         uploaded_docs,
     )
+
+    # Do not silently fall back to model knowledge when a required folder
+    # failed to load.
+    required_source_missing = (
+        (response_mode == MODES[0] and not kb_docs)
+        or (response_mode in (MODES[1], MODES[2]) and not checklist_docs)
+    )
+
+    if required_source_missing:
+        if response_mode == MODES[0]:
+            answer = (
+                "I don't see that information in our current knowledge base. "
+                "No readable files were loaded from the Knowledge Base folder. "
+                "Open 'Source status' to check the folder and extracted files."
+            )
+        else:
+            answer = (
+                "I cannot apply the institutional checklist because no readable "
+                "files were loaded from the Checklist folder. Open 'Source status' "
+                "to check the folder and extracted files."
+            )
+
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
+        return
 
     system = grounded_system(response_mode, context)
 
