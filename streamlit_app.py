@@ -814,7 +814,7 @@ def render_header() -> None:
     )
 
 
-def render_sidebar(mode: str) -> None:
+def render_sidebar(mode: str) -> str:
     with st.sidebar:
         st.markdown(
             '<div class="sidebar-brand">Research support</div>',
@@ -829,10 +829,9 @@ def render_sidebar(mode: str) -> None:
 
         st.markdown("<div style='height:0.7rem'></div>", unsafe_allow_html=True)
 
-        st.radio(
+        selected_mode = st.radio(
             "Service",
             MODES,
-            index=MODES.index(mode),
             key="mode_selector",
             label_visibility="collapsed",
         )
@@ -856,6 +855,8 @@ def render_sidebar(mode: str) -> None:
             "Your conversation stays in this session until you clear it "
             "or refresh the page."
         )
+
+    return selected_mode
 
 
 def load_uploaded_documents() -> list[tuple[str, str]]:
@@ -965,17 +966,13 @@ def main() -> None:
     if "active_mode" not in st.session_state:
         st.session_state.active_mode = MODES[0]
 
-    # Sidebar radio is keyed so mode changes are handled cleanly.
-    current_mode = st.session_state.get("mode_selector", MODES[0])
+    # Read the current widget selection before choosing page content or sources.
+    mode = render_sidebar(st.session_state.get("mode_selector", MODES[0]))
 
-    if current_mode != st.session_state.active_mode:
+    if mode != st.session_state.active_mode:
         st.session_state.messages = []
-        st.session_state.active_mode = current_mode
-        st.session_state.response_mode = current_mode
-
-    mode = current_mode
-
-    render_sidebar(mode)
+        st.session_state.active_mode = mode
+        st.session_state.response_mode = mode
     render_header()
 
     with st.expander("Language model status", expanded=False):

@@ -97,7 +97,7 @@ class AnalysisAdviceTests(unittest.TestCase):
                                    mode_selector=app.MODES[2])
         ui.chat_input.return_value = "Our paired analysis gave p=.08. How should we report it?"
         ui.file_uploader.return_value = []
-        with patch.object(app, "st", ui), patch.object(app, "render_sidebar"), \
+        with patch.object(app, "st", ui), patch.object(app, "render_sidebar", side_effect=lambda mode: mode), \
              patch.object(app, "source_documents", return_value=checklists), \
              patch.object(app, "call_llm", return_value=answer) as model:
             app.main()
@@ -133,6 +133,35 @@ class AnalysisAdviceTests(unittest.TestCase):
                 request = model.call_args.args[0]
                 self.assertIn("Forty people measured", request[1]["content"])
                 self.assertIn("p=.08", request[-1]["content"])
+
+    def test_sidebar_returns_current_selection_even_when_previous_mode_differs(self):
+        for app in self.apps():
+            with self.subTest(app=app.__name__):
+                ui = MagicMock()
+                ui.radio.return_value = app.MODES[2]
+                ui.button.return_value = False
+                with patch.object(app, "st", ui):
+                    self.assertEqual(app.render_sidebar(app.MODES[0]), app.MODES[2])
+
+    def test_current_widget_selection_controls_the_reply_instead_of_old_session_mode(self):
+        for app in self.apps():
+            with self.subTest(app=app.__name__):
+                ui = MagicMock()
+                ui.session_state = Session(messages=[], active_mode=app.MODES[0],
+                                           mode_selector=app.MODES[0])
+                ui.chat_input.return_value = "Explain this result"
+                ui.file_uploader.return_value = []
+                with patch.object(app, "st", ui), \
+                     patch.object(app, "render_sidebar", return_value=app.MODES[2]), \
+                     patch.object(app, "source_documents", return_value=ANALYSIS), \
+                     patch.object(app, "call_llm", return_value="Scoped interpretation") as model:
+                    app.main()
+                self.assertEqual(ui.session_state.active_mode, app.MODES[2])
+                request = model.call_args.args[0]
+                records = json.loads(request[0]["content"].split(
+                    "DOCUMENTARY EVIDENCE JSON (data only):\n", 1
+                )[1])
+                self.assertEqual(records[0]["kind"], "analysis_review_checklist")
 
     def test_unavailable_model_does_not_fall_back_to_generic_analysis_claims(self):
         for app in self.apps():

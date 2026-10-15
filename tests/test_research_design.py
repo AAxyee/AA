@@ -111,7 +111,7 @@ class ResearchDesignTests(unittest.TestCase):
         ui.session_state = Session(messages=[], active_mode=app.MODES[1], mode_selector=app.MODES[1])
         ui.chat_input.return_value = "How can I evaluate a programme with no control group?"
         ui.file_uploader.return_value = []
-        with patch.object(app, "st", ui), patch.object(app, "render_sidebar"), \
+        with patch.object(app, "st", ui), patch.object(app, "render_sidebar", side_effect=lambda mode: mode), \
              patch.object(app, "source_documents", return_value=checklists), \
              patch.object(app, "call_llm", return_value=answer) as model:
             app.main()
