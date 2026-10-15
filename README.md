@@ -34,10 +34,11 @@ DOCX, TXT, Markdown, CSV and JSON versions with the same base names are also
 supported. Other filenames in this folder are excluded from institutional
 answers. Do not add confidential documents to a public repository.
 
-The repository currently includes `Info for knowledge base.pdf`; the approved
-`Overview of studies` document still needs to be supplied. Until then, the app
-answers from the available approved source and warns that the overview is
-missing. It cannot confirm whether a related study exists in the absent overview.
+Both approved PDFs are included in the repository. The app uses
+`Info for knowledge base.pdf` for institutional information and
+`Overview of studies.pdf` to identify similar or related studies.
+If either file cannot be read, the app reports that limitation and continues
+with the approved sources that are available.
 
 Open **Source status** in `streamlit_app.py` or `streamlit_app2.py` to see the
 readable sources and per-document loading errors. `streamlit_app1.py` displays

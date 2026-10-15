@@ -95,6 +95,23 @@ class KnowledgeSourcesTests(unittest.TestCase):
         self.assertEqual(docs, [])
         self.assertIn("folder not found", issues[0])
 
+    def test_both_repository_pdfs_are_available_to_institutional_answers(self):
+        with patch.dict(sys.modules, {"streamlit": MagicMock()}):
+            for name in ("streamlit_app", "streamlit_app1", "streamlit_app2"):
+                with self.subTest(entry_point=name):
+                    app = importlib.import_module(name)
+                    docs, issues = load_knowledge_sources(app.KB_DIR, app.KB_FILES,
+                                                         app.read_text_file)
+                    self.assertEqual({filename for filename, _ in docs},
+                                     {"Info for knowledge base.pdf", "Overview of studies.pdf"})
+                    self.assertEqual(issues, [])
+                    self.assertTrue(all(len(text) > 1000 for _, text in docs))
+                    for filename, _ in docs:
+                        packet, selected = app.build_source_packet(
+                            app.MODES[0], Path(filename).stem, docs, [], []
+                        )
+                        self.assertIn(filename, {source for source, _ in selected})
+
     def test_real_pdf_and_source_packet_in_all_entry_points(self):
         # Import without running Streamlit or making model requests.
         with patch.dict(sys.modules, {"streamlit": MagicMock()}):
@@ -122,3 +139,4 @@ class KnowledgeSourcesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
