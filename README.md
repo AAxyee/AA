@@ -51,3 +51,16 @@ Run the source-loading regression checks with:
 python -m unittest discover -s tests -v
 ```
 
+
+### Research-design consultation
+
+When **Source for new information - Advice on research design** is selected,
+Wanda uses only **Study design checklist** as the checklist framework, considers
+existing evidence before new data collection, and is instructed to recommend a
+feasible design with reasons, alternatives, limitations and next steps. Earlier
+user requirements are retained as bounded context for longer conversations.
+
+Tailored advice requires the configured language model to be reachable. Without
+it, Wanda explicitly says it has not assessed the study and shows the checklist
+and starting questions instead. See [the research-design review scenarios](docs/research-design-review.md)
+for examples to evaluate with the configured model.

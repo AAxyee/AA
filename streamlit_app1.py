@@ -16,6 +16,10 @@ from typing import Iterable
 import streamlit as st
 
 from knowledge_sources import load_knowledge_sources
+from research_design import (
+    DESIGN_STARTER, design_history, design_offline_response, design_source_packet,
+    design_system, finish_design_answer, select_checklist,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +409,9 @@ def call_llm(messages: list[dict[str, str]]) -> str | None:
 def grounded_system(mode: str, context: str) -> str:
     """Create a strong research-support system prompt."""
 
+    if mode == MODES[1]:
+        return design_system(context)
+
     common = """
 You are Wanna know Wanda, a careful and practical research support assistant
 for NCSS.
@@ -564,6 +571,11 @@ def build_source_packet(
     Research-design and analysis questions use Checklist first, supplemented
     by relevant Knowledge Base material and session uploads.
     """
+    if mode == MODES[1]:
+        return design_source_packet(query, kb_docs, checklist_docs, uploaded_docs, retrieve)
+    if mode in CHECKLIST_FILES:
+        checklist_docs = select_checklist(checklist_docs, CHECKLIST_FILES[mode])
+
     if mode == MODES[0]:
         # Do not use general knowledge to answer institutional questions.
         selected = retrieve(query, kb_docs, limit=12)
@@ -1036,6 +1048,9 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+    if mode == MODES[1] and not st.session_state.messages:
+        st.markdown(DESIGN_STARTER)
+
     prompt = st.chat_input(
         "Describe your research question, design, data, or analysis..."
     )
@@ -1088,6 +1103,19 @@ def main() -> None:
         st.session_state.messages.append({"role": "assistant", "content": answer})
         return
 
+    if response_mode in CHECKLIST_FILES and not select_checklist(
+        checklist_docs, CHECKLIST_FILES[response_mode]
+    ):
+        answer = (
+            f"I cannot apply the {CHECKLIST_FILES[response_mode]} because its "
+            "source file is missing or unreadable. Check the Checklist folder "
+            "and PDF extraction."
+        )
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        return
+
     system = grounded_system(response_mode, context)
 
     # Keep recent history, but avoid allowing the conversation to grow
@@ -1099,6 +1127,9 @@ def main() -> None:
         }
         for item in st.session_state.messages[-12:]
     ]
+
+    if response_mode == MODES[1]:
+        history = design_history(st.session_state.messages)
 
     answer = call_llm(
         [
@@ -1115,6 +1146,9 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Graceful fallback when no API key is configured
     # -----------------------------------------------------------------------
+
+    if answer is None and response_mode == MODES[1]:
+        answer = design_offline_response(selected)
 
     if answer is None:
         if selected:
@@ -1193,6 +1227,9 @@ def main() -> None:
 
         if model_issue:
             answer += "\n\nThe language model could not be reached: " + model_issue
+
+    if response_mode == MODES[1]:
+        answer = finish_design_answer(answer)
 
     with st.chat_message("assistant"):
         st.markdown(answer)

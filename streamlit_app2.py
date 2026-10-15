@@ -16,6 +16,10 @@ from typing import Iterable
 import streamlit as st
 
 from knowledge_sources import load_knowledge_sources
+from research_design import (
+    DESIGN_STARTER, design_history, design_offline_response, design_source_packet,
+    design_system, finish_design_answer, select_checklist,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +409,9 @@ def call_llm(messages: list[dict[str, str]]) -> str | None:
 def grounded_system(mode: str, context: str) -> str:
     """Create a strong research-support system prompt."""
 
+    if mode == MODES[1]:
+        return design_system(context)
+
     common = """
 You are Wanna know Wanda, a careful and practical research support assistant
 for NCSS.
@@ -580,6 +587,11 @@ def build_source_packet(
     - We pass substantial document text directly instead of relying only on
       lexical retrieval, because keyword retrieval can miss relevant sections.
     """
+
+    if mode == MODES[1]:
+        return design_source_packet(query, kb_docs, checklist_docs, uploaded_docs, retrieve)
+    if mode in CHECKLIST_FILES:
+        checklist_docs = select_checklist(checklist_docs, CHECKLIST_FILES[mode])
 
     def bounded_documents(
         docs: list[tuple[str, str]],
@@ -1124,6 +1136,9 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
+    if mode == MODES[1] and not st.session_state.messages:
+        st.markdown(DESIGN_STARTER)
+
     prompt = st.chat_input(
         "Describe your research question, design, data, or analysis..."
     )
@@ -1169,21 +1184,22 @@ def main() -> None:
     # failed to load.
     required_source_missing = (
         (response_mode == MODES[0] and not kb_docs)
-        or (response_mode in (MODES[1], MODES[2]) and not checklist_docs)
+        or (response_mode in (MODES[1], MODES[2])
+            and not select_checklist(checklist_docs, CHECKLIST_FILES[response_mode]))
     )
 
     if required_source_missing:
         if response_mode == MODES[0]:
             answer = (
-"I cannot access the institutional knowledge sources right now. "
+                "I cannot access the institutional knowledge sources right now. "
                 "No approved knowledge-base documents could be read. "
                 "Open 'Source status' for the missing files or extraction errors."
             )
         else:
             answer = (
-                "I cannot apply the institutional checklist because no readable "
-                "files were loaded from the Checklist folder. Open 'Source status' "
-                "to check the folder and extracted files."
+                f"I cannot apply the {CHECKLIST_FILES[response_mode]} because its "
+                "source file is missing or unreadable. Open 'Source status' "
+                "to check the Checklist folder and PDF extraction."
             )
 
         with st.chat_message("assistant"):
@@ -1206,6 +1222,9 @@ def main() -> None:
         for item in st.session_state.messages[-12:]
     ]
 
+    if response_mode == MODES[1]:
+        history = design_history(st.session_state.messages)
+
     answer = call_llm(
         [
             {"role": "system", "content": system},
@@ -1221,6 +1240,9 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Graceful fallback when no API key is configured
     # -----------------------------------------------------------------------
+
+    if answer is None and response_mode == MODES[1]:
+        answer = design_offline_response(selected)
 
     if answer is None:
         if selected:
@@ -1299,6 +1321,9 @@ def main() -> None:
 
         if model_issue:
             answer += "\n\nThe language model could not be reached: " + model_issue
+
+    if response_mode == MODES[1]:
+        answer = finish_design_answer(answer)
 
     with st.chat_message("assistant"):
         st.markdown(answer)
