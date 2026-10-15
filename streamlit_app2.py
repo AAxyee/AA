@@ -15,6 +15,8 @@ from typing import Iterable
 
 import streamlit as st
 
+from knowledge_sources import load_knowledge_sources
+
 
 # ---------------------------------------------------------------------------
 # App configuration
@@ -46,8 +48,7 @@ important information against appropriate professional or authoritative sources.
 KNOWLEDGE_BASE_FOLDER = "Knowledge Base"
 CHECKLIST_FOLDER = "Checklist"
 
-# Kept for compatibility/documentation. The app now loads every supported
-# file in the folders rather than depending on these exact filenames.
+# Only these named documents may supply institutional information.
 KB_FILES = ("Info for knowledge base", "Overview of studies")
 CHECKLIST_FILES = {
     MODES[1]: "Study design checklist",
@@ -474,8 +475,11 @@ Read it and use it before answering.
 - Institutional facts, policies, procedures, previous studies, requirements,
   forms, and institutional practices MUST come from the supplied files.
 - Cite each source-derived point using "(Source: filename)".
-- For "Look for institutional information", answer ONLY from KNOWLEDGE BASE
-  files. Do not use general knowledge to fill gaps.
+- For "Look for institutional information", answer ONLY from the supplied
+  approved files "Info for knowledge base" and "Overview of studies". Do not
+  use general knowledge to fill gaps. If "Overview of studies" is not supplied,
+  explain that the study overview is unavailable; do not claim that no related
+  study has been conducted.
 - For research design and analysis, use CHECKLIST files as the primary
   institutional framework. Explicitly apply relevant checklist points to the
   user's question.
@@ -1017,10 +1021,16 @@ def main() -> None:
     # Select source material
     # -----------------------------------------------------------------------
 
-    # Load EVERY supported file from the two named folders.
-    # No source filename has to be hard-coded in the app.
-    kb_docs = source_documents(KB_DIR)
+    # Institutional evidence is restricted to the two approved document names.
+    kb_docs, kb_issues = load_knowledge_sources(KB_DIR, KB_FILES, read_text_file)
     checklist_docs = source_documents(CHECKLIST_DIR)
+
+    if mode == MODES[0] and kb_issues:
+        st.warning(
+            "Some institutional sources are unavailable. Answers use only "
+            "the approved files that could be read. "
+            "See Source status for details.\n\n" + "\n\n".join(kb_issues)
+        )
 
     loaded_kb_names = ", ".join(name for name, _ in kb_docs) or "none found"
     loaded_checklists = ", ".join(name for name, _ in checklist_docs) or "none found"
@@ -1028,7 +1038,9 @@ def main() -> None:
     with st.expander("Source status", expanded=False):
         st.markdown("**Knowledge Base**")
         st.write(f"Folder: `{KB_DIR}`")
-        st.write(f"Readable files: {len(kb_docs)}")
+        st.write(f"Readable approved files: {len(kb_docs)}")
+        for issue in kb_issues:
+            st.warning(issue)
         if kb_docs:
             for name, content in kb_docs:
                 st.write(f"✓ {name} — {len(content):,} characters extracted")
@@ -1163,9 +1175,9 @@ def main() -> None:
     if required_source_missing:
         if response_mode == MODES[0]:
             answer = (
-                "I don't see that information in our current knowledge base. "
-                "No readable files were loaded from the Knowledge Base folder. "
-                "Open 'Source status' to check the folder and extracted files."
+"I cannot access the institutional knowledge sources right now. "
+                "No approved knowledge-base documents could be read. "
+                "Open 'Source status' for the missing files or extraction errors."
             )
         else:
             answer = (
@@ -1298,3 +1310,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

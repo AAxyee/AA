@@ -15,6 +15,8 @@ from typing import Iterable
 
 import streamlit as st
 
+from knowledge_sources import load_knowledge_sources
+
 
 # ---------------------------------------------------------------------------
 # App configuration
@@ -46,8 +48,7 @@ important information against appropriate professional or authoritative sources.
 KNOWLEDGE_BASE_FOLDER = "Knowledge Base"
 CHECKLIST_FOLDER = "Checklist"
 
-# Kept for compatibility/documentation. The app now loads every supported
-# file in the folders rather than depending on these exact filenames.
+# Only these named documents may supply institutional information.
 KB_FILES = ("Info for knowledge base", "Overview of studies")
 CHECKLIST_FILES = {
     MODES[1]: "Study design checklist",
@@ -478,6 +479,9 @@ checklists, or documents uploaded by the user.
 - General research methodology may be provided from established methodological
   knowledge, but label it clearly as "General research guidance" when useful.
 - Never manufacture a source citation.
+- Institutional answers must use only the supplied approved files "Info for
+  knowledge base" and "Overview of studies". If the overview is unavailable,
+  explain that limitation; do not conclude that no related study exists.
 
 RESPONSE STYLE
 Use short headings and bullets where they improve readability.
@@ -949,10 +953,16 @@ def main() -> None:
     # Select source material
     # -----------------------------------------------------------------------
 
-    # Load EVERY supported file from the two named folders.
-    # No source filename has to be hard-coded in the app.
-    kb_docs = source_documents(KB_DIR)
+    # Institutional evidence is restricted to the two approved document names.
+    kb_docs, kb_issues = load_knowledge_sources(KB_DIR, KB_FILES, read_text_file)
     checklist_docs = source_documents(CHECKLIST_DIR)
+
+    if mode == MODES[0] and kb_issues:
+        st.warning(
+            "Some institutional sources are unavailable. Answers use only "
+            "the approved files that could be read. "
+            "Unavailable documents:\n\n" + "\n\n".join(kb_issues)
+        )
 
     loaded_kb_names = ", ".join(name for name, _ in kb_docs) or "none found"
     st.caption(
@@ -1066,6 +1076,17 @@ def main() -> None:
         checklist_docs,
         uploaded_docs,
     )
+
+    if response_mode == MODES[0] and not kb_docs:
+        answer = (
+            "I cannot access the institutional knowledge sources right now. "
+            "No approved knowledge-base documents could be read. "
+            "Check the source warnings above for missing files or extraction errors."
+        )
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+        st.session_state.messages.append({"role": "assistant", "content": answer})
+        return
 
     system = grounded_system(response_mode, context)
 
@@ -1183,3 +1204,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
