@@ -98,3 +98,18 @@ accepted without appending that path twice.
 
 References: [Streamlit app settings](https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app/app-settings)
 and [OpenAI API error guidance](https://developers.openai.com/api/docs/guides/error-codes).
+
+### Advice on analysis, findings and results
+
+The analysis service uses a dedicated consultation framework with **Analysis
+review checklist**. It is instructed to connect each research question to an
+appropriate analysis, check the study/data structure, interpret estimates and
+uncertainty, and distinguish supported findings from overstatements. It covers
+quantitative, qualitative and mixed-methods work and can help draft accurately
+qualified results wording from the supplied material.
+
+Uploads and earlier user context are retained within bounded evidence packets.
+The service gives advice on extracted text; it does not run statistical software
+or independently verify raw-data calculations. A working model connection is
+required for tailored advice. See [the analysis review scenarios](docs/analysis-review.md)
+for representative live quality checks and the limits of automated tests.

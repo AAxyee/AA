@@ -16,6 +16,10 @@ from typing import Iterable
 import streamlit as st
 
 from knowledge_sources import load_knowledge_sources
+from analysis_advice import (
+    ANALYSIS_STARTER, analysis_history, analysis_offline_response,
+    analysis_source_packet, analysis_system, finish_analysis_answer,
+)
 from model_client import configuration_status, load_model_config, request_completion
 from research_design import (
     DESIGN_STARTER, design_history, design_offline_response, design_source_packet,
@@ -357,6 +361,8 @@ def grounded_system(mode: str, context: str) -> str:
 
     if mode == MODES[1]:
         return design_system(context)
+    if mode == MODES[2]:
+        return analysis_system(context)
 
     common = """
 You are Wanna know Wanda, a careful and practical research support assistant
@@ -536,6 +542,8 @@ def build_source_packet(
 
     if mode == MODES[1]:
         return design_source_packet(query, kb_docs, checklist_docs, uploaded_docs, retrieve)
+    if mode == MODES[2]:
+        return analysis_source_packet(query, kb_docs, checklist_docs, uploaded_docs, retrieve)
     if mode in CHECKLIST_FILES:
         checklist_docs = select_checklist(checklist_docs, CHECKLIST_FILES[mode])
 
@@ -1093,6 +1101,8 @@ def main() -> None:
 
     if mode == MODES[1] and not st.session_state.messages:
         st.markdown(DESIGN_STARTER)
+    elif mode == MODES[2] and not st.session_state.messages:
+        st.markdown(ANALYSIS_STARTER)
 
     prompt = st.chat_input(
         "Describe your research question, design, data, or analysis..."
@@ -1157,6 +1167,8 @@ def main() -> None:
                 "to check the Checklist folder and PDF extraction."
             )
 
+        if response_mode == MODES[2]:
+            answer = finish_analysis_answer(answer)
         with st.chat_message("assistant"):
             st.markdown(answer)
 
@@ -1179,6 +1191,8 @@ def main() -> None:
 
     if response_mode == MODES[1]:
         history = design_history(st.session_state.messages)
+    elif response_mode == MODES[2]:
+        history = analysis_history(st.session_state.messages)
 
     answer = call_llm(
         [
@@ -1198,6 +1212,8 @@ def main() -> None:
 
     if answer is None and response_mode == MODES[1]:
         answer = design_offline_response(selected, st.session_state.get("llm_status"))
+    elif answer is None and response_mode == MODES[2]:
+        answer = analysis_offline_response(selected, st.session_state.get("llm_status"))
 
     if answer is None:
         if selected:
@@ -1276,6 +1292,8 @@ def main() -> None:
 
     if response_mode == MODES[1]:
         answer = finish_design_answer(answer)
+    elif response_mode == MODES[2]:
+        answer = finish_analysis_answer(answer)
 
     with st.chat_message("assistant"):
         st.markdown(answer)

@@ -27,11 +27,20 @@ def select_checklist(documents, stem):
 
 
 def design_source_packet(query, kb_docs, checklist_docs, uploaded_docs, retrieve):
-    """Keep the whole design checklist and distinguish evidence from study context."""
+    """Build the design service's documentary evidence."""
+    return consultation_source_packet(
+        query, kb_docs, checklist_docs, uploaded_docs, retrieve,
+        DESIGN_CHECKLIST, "study_design_checklist",
+    )
+
+
+def consultation_source_packet(query, kb_docs, checklist_docs, uploaded_docs, retrieve,
+                               checklist_stem, checklist_kind):
+    """Keep the relevant checklist and distinguish evidence from study context."""
     selected = []
     records = []
     groups = [
-        ("study_design_checklist", select_checklist(checklist_docs, DESIGN_CHECKLIST), 25000),
+        (checklist_kind, select_checklist(checklist_docs, checklist_stem), 25000),
         ("institutional_background", retrieve(query, kb_docs, limit=4) if kb_docs else [], 5000),
         ("user_supplied_study_context", uploaded_docs, 18000),
     ]
