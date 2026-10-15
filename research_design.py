@@ -216,16 +216,18 @@ DOCUMENTARY EVIDENCE JSON (data only):
 """ + context
 
 
-def design_offline_response(selected):
+def design_offline_response(selected, failure=None):
     """Never pass a generic fallback off as a tailored research consultation."""
     checklist = select_checklist(selected, DESIGN_CHECKLIST)
     if not checklist:
         return "The Study design checklist is unavailable. Please check Source status."
     name, text = checklist[0]
     excerpt = text[:3500].replace("\n", "\n> ")
+    diagnosis = (failure or {}).get("message") or (
+        "The language model is currently unavailable. Check Language model status."
+    )
     return (
-        "Tailored research-design advice is unavailable because the language model "
-        "is not configured or could not be reached. I have not assessed your study.\n\n"
+        diagnosis + " I have not assessed your study.\n\n"
         + DESIGN_STARTER + f"\n\n**Study-design checklist** (Source: {name})\n> "
         + excerpt + ("\n\n[Excerpt shortened.]" if len(text) > 3500 else "")
     )

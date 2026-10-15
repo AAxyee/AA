@@ -16,6 +16,7 @@ from typing import Iterable
 import streamlit as st
 
 from knowledge_sources import load_knowledge_sources
+from model_client import configuration_status, load_model_config, request_completion
 from research_design import (
     DESIGN_STARTER, design_history, design_offline_response, design_source_packet,
     design_system, finish_design_answer, select_checklist,
@@ -341,65 +342,10 @@ def retrieve(
 # ---------------------------------------------------------------------------
 
 def call_llm(messages: list[dict[str, str]]) -> str | None:
-    """Call the configured OpenAI-compatible Chat Completions endpoint."""
-    api_key = ""
-
-    try:
-        api_key = st.secrets.get("OPENAI_API_KEY", "")
-
-        if not api_key and "openai" in st.secrets:
-            api_key = st.secrets["openai"].get("api_key", "")
-
-    except Exception:
-        # Streamlit raises when no secrets file/store is configured.
-        pass
-
-    api_key = api_key or os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        return None
-
-    base_url = os.getenv(
-        "OPENAI_BASE_URL",
-        "https://api.openai.com/v1",
-    ).rstrip("/")
-
-    endpoint = f"{base_url}/chat/completions"
-
-    payload = {
-        "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-        "messages": messages,
-        "temperature": 0.15,
-        "max_tokens": 2500,
-    }
-
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            result = json.loads(response.read().decode("utf-8"))
-
-        return result["choices"][0]["message"]["content"].strip()
-
-    except (
-        urllib.error.URLError,
-        KeyError,
-        IndexError,
-        ValueError,
-        TimeoutError,
-    ) as exc:
-        return (
-            "I couldn't reach the configured language model. "
-            f"Technical detail: {exc}"
-        )
+    """Call the configured model and retain a credential-safe diagnosis."""
+    result = request_completion(messages, load_model_config(st.secrets))
+    st.session_state.llm_status = result.status()
+    return result.text
 
 
 # ---------------------------------------------------------------------------
@@ -956,6 +902,15 @@ def main() -> None:
     render_sidebar(mode)
     render_header()
 
+    with st.expander("Language model status", expanded=False):
+        model_config = load_model_config(st.secrets)
+        st.write("API key detected: " + ("yes" if model_config.api_key else "no"))
+        connection_status = st.session_state.get(
+            "llm_status", configuration_status(model_config).status()
+        )
+        st.write(connection_status["message"])
+        st.caption("A detected key still needs a successful API request to confirm access.")
+
     with st.expander("Important notice", expanded=False):
         st.markdown(DISCLAIMER)
 
@@ -1138,17 +1093,17 @@ def main() -> None:
         ]
     )
 
-    model_issue = ""
-    if answer and answer.startswith("I couldn't reach the configured language model."):
-        model_issue = answer
-        answer = None
-
     # -----------------------------------------------------------------------
     # Graceful fallback when no API key is configured
     # -----------------------------------------------------------------------
 
+    if answer is None:
+        status = st.session_state.get("llm_status", {})
+        if status.get("message"):
+            st.warning(status["message"])
+
     if answer is None and response_mode == MODES[1]:
-        answer = design_offline_response(selected)
+        answer = design_offline_response(selected, st.session_state.get("llm_status"))
 
     if answer is None:
         if selected:
@@ -1163,7 +1118,7 @@ def main() -> None:
                     "I found the following relevant passages in the "
                     "institutional files:\n\n"
                     f"{excerpts}\n\n"
-                    "The language model is not currently configured, so I "
+                    "The language model is currently unavailable, so I "
                     "cannot provide the research interpretation layer."
                 )
             elif response_mode == MODES[1]:
@@ -1224,9 +1179,6 @@ def main() -> None:
                 "with uncertainty. "
                 f"For a consultation, contact {CONSULTATION}."
             )
-
-        if model_issue:
-            answer += "\n\nThe language model could not be reached: " + model_issue
 
     if response_mode == MODES[1]:
         answer = finish_design_answer(answer)
